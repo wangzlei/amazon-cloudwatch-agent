@@ -1,0 +1,123 @@
+# Default ADOT OBI eBPF config shipped by the RPM as
+#   /opt/aws/amazon-cloudwatch-agent/etc/ebpf/obi.yaml   (%config(noreplace))
+# It lives outside etc/amazon-cloudwatch-agent.d/ so that
+# `amazon-cloudwatch-agent-ctl -a fetch-config` (which empties that dir) keeps it.
+# start-amazon-cloudwatch-agent passes it as the FIRST -otelconfig.
+#
+# To change it, edit this file: rpm upgrades keep your edits.
+# A YAML in etc/amazon-cloudwatch-agent.d/ CANNOT override the components defined
+# here: the agent refuses to merge duplicate keys under receivers, processors,
+# exporters, extensions and service::pipelines, and fails to start with
+#   E! Error running agent: failed to merge OTEL configs: merge conflict in receivers: [obi]
+# Such a YAML may only add components with different names.
+# To turn eBPF off:
+#   touch /opt/aws/amazon-cloudwatch-agent/etc/ebpf/disabled && systemctl restart amazon-cloudwatch-agent
+# Source: adot-obi config/otel.yaml.
+#
+#   AWS_REGION      X-Ray / CloudWatch region          (default us-west-2)
+#   AWS_VPC_ID, AWS_SUBNET_ID  optional resource attributes (skipped when unset)
+#
+# Never use a double dollar sign in this file: cwagent expands it a second time
+# and fails on the result.
+receivers:
+  obi:
+    log_level: INFO
+    ebpf:
+      bpf_fs_base_dir: /sys/fs/bpf
+      # Pinned: cwagent's obi receiver defaults to "tcp".
+      context_propagation: "all"
+      high_request_volume: true
+      # AWS SDK spans: the upstream S3/SQS parsers need the large HTTP buffer.
+      buffer_sizes:
+        http: 8192
+      payload_extraction:
+        http:
+          aws:
+            enabled: true
+    discovery:
+      instrument:
+        # ping: 8000; eks-auto apps: 8080-8083, 8443. Not an env var: a single-port
+        # value would be typed as an int and rejected by OBI.
+        - open_ports: "8000,8080,8081,8082,8083,8443"
+    attributes:
+      kubernetes:
+        # On in EKS, off on plain EC2 ("true" would fail without a cluster).
+        enable: "autodetect"
+    metrics:
+      features: "application"
+
+extensions:
+  sigv4auth/xray:
+    region: ${env:AWS_REGION:-us-west-2}
+    service: xray
+  sigv4auth/monitoring:
+    region: ${env:AWS_REGION:-us-west-2}
+    service: monitoring
+
+processors:
+  # AWS-flavored resource attributes. OBI's EC2 detection gives host.id / cloud.*.
+  # host.ip is derived only from an ip-a-b-c-d EC2 hostname (not from a pod name);
+  # VPC / subnet come in as AWS_VPC_ID / AWS_SUBNET_ID env and are skipped when unset.
+  transform/aws:
+    error_mode: ignore
+    trace_statements:
+      - context: resource
+        statements:
+          - set(attributes["ec2.instance.id"], attributes["host.id"]) where attributes["host.id"] != nil
+          - set(attributes["aws.account.id"], attributes["cloud.account.id"]) where attributes["cloud.account.id"] != nil
+          - set(attributes["aws.region"], attributes["cloud.region"]) where attributes["cloud.region"] != nil
+          - set(attributes["host.ip"], attributes["host.name"]) where attributes["host.name"] != nil and IsMatch(attributes["host.name"], "^ip-[0-9]+-[0-9]+-[0-9]+-[0-9]+")
+          - replace_pattern(attributes["host.ip"], "[.].*", "") where attributes["host.ip"] != nil
+          - replace_pattern(attributes["host.ip"], "^ip-", "") where attributes["host.ip"] != nil
+          - replace_pattern(attributes["host.ip"], "-", ".") where attributes["host.ip"] != nil
+          - set(attributes["aws.vpc.id"], "${env:AWS_VPC_ID}") where "${env:AWS_VPC_ID}" != ""
+          - set(attributes["aws.subnet.id"], "${env:AWS_SUBNET_ID}") where "${env:AWS_SUBNET_ID}" != ""
+    metric_statements:
+      - context: resource
+        statements:
+          - set(attributes["ec2.instance.id"], attributes["host.id"]) where attributes["host.id"] != nil
+          - set(attributes["aws.account.id"], attributes["cloud.account.id"]) where attributes["cloud.account.id"] != nil
+          - set(attributes["aws.region"], attributes["cloud.region"]) where attributes["cloud.region"] != nil
+          - set(attributes["host.ip"], attributes["host.name"]) where attributes["host.name"] != nil and IsMatch(attributes["host.name"], "^ip-[0-9]+-[0-9]+-[0-9]+-[0-9]+")
+          - replace_pattern(attributes["host.ip"], "[.].*", "") where attributes["host.ip"] != nil
+          - replace_pattern(attributes["host.ip"], "^ip-", "") where attributes["host.ip"] != nil
+          - replace_pattern(attributes["host.ip"], "-", ".") where attributes["host.ip"] != nil
+          - set(attributes["aws.vpc.id"], "${env:AWS_VPC_ID}") where "${env:AWS_VPC_ID}" != ""
+          - set(attributes["aws.subnet.id"], "${env:AWS_SUBNET_ID}") where "${env:AWS_SUBNET_ID}" != ""
+  # CloudWatch OTLP metrics require delta temporality; OBI emits cumulative.
+  cumulativetodelta: {}
+  # CloudWatch OTLP accepts at most 1000 datapoints per request.
+  batch:
+    timeout: 5s
+    send_batch_size: 500
+    send_batch_max_size: 500
+
+exporters:
+  debug:
+    verbosity: basic
+  # otlp_http compresses with gzip by default.
+  otlp_http/xray:
+    traces_endpoint: https://xray.${env:AWS_REGION:-us-west-2}.amazonaws.com/v1/traces
+    auth:
+      authenticator: sigv4auth/xray
+  otlp_http/cloudwatch:
+    metrics_endpoint: https://monitoring.${env:AWS_REGION:-us-west-2}.amazonaws.com/v1/metrics
+    auth:
+      authenticator: sigv4auth/monitoring
+
+service:
+  extensions: [sigv4auth/xray, sigv4auth/monitoring]
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: none
+  pipelines:
+    traces:
+      receivers: [obi]
+      processors: [transform/aws, batch]
+      exporters: [otlp_http/xray, debug]
+    metrics:
+      receivers: [obi]
+      processors: [transform/aws, cumulativetodelta, batch]
+      exporters: [otlp_http/cloudwatch, debug]

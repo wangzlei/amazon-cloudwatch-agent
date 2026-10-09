@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 
 	"github.com/BurntSushi/toml"
@@ -64,6 +65,9 @@ func startAgent(writer io.WriteCloser) error {
 		return err
 	}
 
+	// Before the log file is closed: it logs whether the eBPF config is used.
+	ebpfArgs := ebpfConfigArgs()
+
 	if err := writer.Close(); err != nil {
 		log.Printf("E! Cannot close the log file, ERROR is %v ", err)
 		return err
@@ -75,6 +79,7 @@ func startAgent(writer io.WriteCloser) error {
 		"-config", paths.TomlConfigPath,
 		"-envconfig", paths.EnvConfigPath,
 	}
+	agentCmd = append(agentCmd, ebpfArgs...)
 	agentCmd = append(agentCmd, config.GetOTELConfigArgs(paths.ConfigDirPath)...)
 	agentCmd = append(agentCmd, "-pidfile", paths.AgentDir+"/var/amazon-cloudwatch-agent.pid")
 	if err = syscall.Exec(name, agentCmd, os.Environ()); err != nil {
@@ -84,6 +89,27 @@ func startAgent(writer io.WriteCloser) error {
 	}
 
 	return nil
+}
+
+// ebpfConfigArgs returns the -otelconfig pair for the default eBPF (ADOT OBI)
+// config shipped by the RPM in etc/ebpf/, unless etc/ebpf/disabled exists. It
+// is kept outside amazon-cloudwatch-agent.d so that fetch-config, which empties
+// that directory, does not delete it. Note that a YAML in
+// amazon-cloudwatch-agent.d cannot redefine the components it declares: the
+// merge rejects duplicate keys in receivers, processors, exporters, extensions
+// and service::pipelines. Edit etc/ebpf/obi.yaml (%config(noreplace)) to change
+// it, or create etc/ebpf/disabled to turn it off.
+func ebpfConfigArgs() []string {
+	cfg := filepath.Join(paths.AgentDir, "etc", "ebpf", "obi.yaml")
+	if _, err := os.Stat(cfg); err != nil {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(paths.AgentDir, "etc", "ebpf", "disabled")); err == nil {
+		log.Printf("I! eBPF default config %s is disabled (etc/ebpf/disabled exists)", cfg)
+		return nil
+	}
+	log.Printf("I! Loading eBPF default config %s", cfg)
+	return []string{"-otelconfig", cfg}
 }
 
 func getTOMLConfigMap() (map[string]any, error) {

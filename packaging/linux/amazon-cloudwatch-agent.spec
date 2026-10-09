@@ -59,6 +59,8 @@ ln -f -s /opt/aws/amazon-cloudwatch-agent/var ${RPM_BUILD_ROOT}/var/run/amazon/a
 /opt/aws/amazon-cloudwatch-agent/bin/opentelemetry-jmx-metrics.jar
 /opt/aws/amazon-cloudwatch-agent/doc/amazon-cloudwatch-agent-schema.json
 %config(noreplace) /opt/aws/amazon-cloudwatch-agent/etc/common-config.toml
+%dir /opt/aws/amazon-cloudwatch-agent/etc/ebpf
+%config(noreplace) /opt/aws/amazon-cloudwatch-agent/etc/ebpf/obi.yaml
 /opt/aws/amazon-cloudwatch-agent/LICENSE
 /opt/aws/amazon-cloudwatch-agent/NOTICE
 
