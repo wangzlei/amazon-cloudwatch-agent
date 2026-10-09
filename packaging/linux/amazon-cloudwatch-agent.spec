@@ -66,6 +66,8 @@ ln -f -s /opt/aws/amazon-cloudwatch-agent/var ${RPM_BUILD_ROOT}/var/run/amazon/a
 /opt/aws/amazon-cloudwatch-agent/RELEASE_NOTES
 /etc/init/amazon-cloudwatch-agent.conf
 /etc/systemd/system/amazon-cloudwatch-agent.service
+%dir /etc/systemd/system/amazon-cloudwatch-agent.service.d
+/etc/systemd/system/amazon-cloudwatch-agent.service.d/ebpf.conf
 
 /usr/bin/amazon-cloudwatch-agent-ctl
 /etc/amazon/amazon-cloudwatch-agent

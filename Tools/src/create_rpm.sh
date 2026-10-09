@@ -32,6 +32,8 @@ cp ${PREPKGPATH}/CWAGENT_VERSION ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch
 cp ${PREPKGPATH}/amazon-cloudwatch-agent ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch-agent/bin/
 cp ${PREPKGPATH}/amazon-cloudwatch-agent-ctl ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch-agent/bin/
 cp ${PREPKGPATH}/amazon-cloudwatch-agent.service ${BUILD_ROOT}/SOURCES/etc/systemd/system/
+mkdir -p ${BUILD_ROOT}/SOURCES/etc/systemd/system/amazon-cloudwatch-agent.service.d
+cp ${PREPKGPATH}/amazon-cloudwatch-agent-ebpf.conf ${BUILD_ROOT}/SOURCES/etc/systemd/system/amazon-cloudwatch-agent.service.d/ebpf.conf
 cp ${PREPKGPATH}/config-translator ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch-agent/bin/
 cp ${PREPKGPATH}/config-downloader ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch-agent/bin/
 cp ${PREPKGPATH}/amazon-cloudwatch-agent-config-wizard ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch-agent/bin/

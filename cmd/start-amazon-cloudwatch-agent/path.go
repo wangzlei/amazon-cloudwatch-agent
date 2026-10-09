@@ -48,8 +48,12 @@ func startAgent(writer io.WriteCloser) error {
 	runAsUser, _ := user.DetectRunAsUser(configMap)
 	log.Printf("I! Detected runAsUser: %v", runAsUser)
 
-	_, err = user.ChangeUser(runAsUser)
-	if err != nil {
+	if os.Geteuid() != 0 {
+		// Started unprivileged (e.g. systemd User=cwagent with ambient capabilities
+		// for the eBPF receiver): there is no user to switch to, and the chown and
+		// setgroups that ChangeUser does would fail without root.
+		log.Printf("I! Running as uid %d, not root: skipping run_as_user %q", os.Geteuid(), runAsUser)
+	} else if _, err = user.ChangeUser(runAsUser); err != nil {
 		log.Printf("E! Failed to ChangeUser: %v ", err)
 		return err
 	}
