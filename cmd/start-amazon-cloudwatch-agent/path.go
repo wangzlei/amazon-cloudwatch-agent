@@ -50,9 +50,10 @@ func startAgent(writer io.WriteCloser) error {
 	log.Printf("I! Detected runAsUser: %v", runAsUser)
 
 	if os.Geteuid() != 0 {
-		// Started unprivileged (e.g. systemd User=cwagent with ambient capabilities
-		// for the eBPF receiver): there is no user to switch to, and the chown and
-		// setgroups that ChangeUser does would fail without root.
+		// Started unprivileged: only when eBPF is enabled, whose systemd drop-in
+		// runs the agent as User=cwagent with ambient capabilities for the eBPF
+		// receiver. There is no user to switch to, and the chown and setgroups
+		// that ChangeUser does would fail without root.
 		log.Printf("I! Running as uid %d, not root: skipping run_as_user %q", os.Geteuid(), runAsUser)
 	} else if _, err = user.ChangeUser(runAsUser); err != nil {
 		log.Printf("E! Failed to ChangeUser: %v ", err)
@@ -92,23 +93,27 @@ func startAgent(writer io.WriteCloser) error {
 }
 
 // ebpfConfigArgs returns the -otelconfig pair for the default eBPF (ADOT OBI)
-// config shipped by the RPM in etc/ebpf/, unless etc/ebpf/disabled exists. It
-// is kept outside amazon-cloudwatch-agent.d so that fetch-config, which empties
-// that directory, does not delete it. Note that a YAML in
-// amazon-cloudwatch-agent.d cannot redefine the components it declares: the
-// merge rejects duplicate keys in receivers, processors, exporters, extensions
-// and service::pipelines. Edit etc/ebpf/obi.yaml (%config(noreplace)) to change
-// it, or create etc/ebpf/disabled to turn it off.
+// config shipped by the RPM in etc/ebpf/, but only when eBPF is opted in, i.e.
+// etc/ebpf/enabled exists. The marker is created by
+// "amazon-cloudwatch-agent-ctl -a enable-ebpf" (which also installs the systemd
+// drop-in that grants the capabilities) and removed by "-a disable-ebpf". Without
+// it the agent behaves like the official one. The config is kept outside
+// amazon-cloudwatch-agent.d so that fetch-config, which empties that directory,
+// does not delete it. Note that a YAML in amazon-cloudwatch-agent.d cannot
+// redefine the components it declares: the merge rejects duplicate keys in
+// receivers, processors, exporters, extensions and service::pipelines. Edit
+// etc/ebpf/obi.yaml (%config(noreplace)) to change it.
 func ebpfConfigArgs() []string {
 	cfg := filepath.Join(paths.AgentDir, "etc", "ebpf", "obi.yaml")
+	marker := filepath.Join(paths.AgentDir, "etc", "ebpf", "enabled")
+	if _, err := os.Stat(marker); err != nil {
+		return nil
+	}
 	if _, err := os.Stat(cfg); err != nil {
+		log.Printf("W! eBPF is enabled (%s exists) but %s is missing: %v", marker, cfg, err)
 		return nil
 	}
-	if _, err := os.Stat(filepath.Join(paths.AgentDir, "etc", "ebpf", "disabled")); err == nil {
-		log.Printf("I! eBPF default config %s is disabled (etc/ebpf/disabled exists)", cfg)
-		return nil
-	}
-	log.Printf("I! Loading eBPF default config %s", cfg)
+	log.Printf("I! eBPF is enabled (%s exists): loading eBPF default config %s", marker, cfg)
 	return []string{"-otelconfig", cfg}
 }
 

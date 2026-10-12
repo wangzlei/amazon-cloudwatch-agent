@@ -32,9 +32,9 @@ cp ${PREPKGPATH}/CWAGENT_VERSION ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch
 cp ${PREPKGPATH}/amazon-cloudwatch-agent ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch-agent/bin/
 cp ${PREPKGPATH}/amazon-cloudwatch-agent-ctl ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch-agent/bin/
 cp ${PREPKGPATH}/amazon-cloudwatch-agent.service ${BUILD_ROOT}/SOURCES/etc/systemd/system/
-mkdir -p ${BUILD_ROOT}/SOURCES/etc/systemd/system/amazon-cloudwatch-agent.service.d
-cp ${PREPKGPATH}/amazon-cloudwatch-agent-ebpf.conf ${BUILD_ROOT}/SOURCES/etc/systemd/system/amazon-cloudwatch-agent.service.d/ebpf.conf
 mkdir -p ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch-agent/etc/ebpf
+# eBPF is opt-in: the drop-in is a template that "ctl -a enable-ebpf" installs.
+cp ${PREPKGPATH}/amazon-cloudwatch-agent-ebpf.conf ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch-agent/etc/ebpf/systemd-dropin.conf
 cp ${PREPKGPATH}/amazon-cloudwatch-agent-ebpf.yaml ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch-agent/etc/ebpf/obi.yaml
 cp ${PREPKGPATH}/config-translator ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch-agent/bin/
 cp ${PREPKGPATH}/config-downloader ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch-agent/bin/

@@ -21,6 +21,14 @@ readonly JSON_DIR="${CONFDIR}/amazon-cloudwatch-agent.d"
 readonly CV_LOG_FILE="${AGENTDIR}/logs/configuration-validation.log"
 readonly COMMON_CONIG="${CONFDIR}/common-config.toml"
 readonly ENV_CONFIG="${CONFDIR}/env-config.json"
+# eBPF (ADOT OBI) is opt-in: the marker makes start-amazon-cloudwatch-agent load
+# etc/ebpf/obi.yaml, and the systemd drop-in (installed from the RPM's template)
+# runs the agent as cwagent with the capabilities the eBPF receiver needs.
+readonly EBPF_DIR="${CONFDIR}/ebpf"
+readonly EBPF_MARKER="${EBPF_DIR}/enabled"
+readonly EBPF_DROPIN_TEMPLATE="${EBPF_DIR}/systemd-dropin.conf"
+readonly EBPF_DROPIN_DIR="/etc/systemd/system/amazon-cloudwatch-agent.service.d"
+readonly EBPF_DROPIN="${EBPF_DROPIN_DIR}/ebpf.conf"
 
 readonly CWA_NAME='amazon-cloudwatch-agent'
 readonly ALL_CONFIG='all'
@@ -31,7 +39,7 @@ UsageString="
 
 
         usage:  amazon-cloudwatch-agent-ctl -a
-                stop|start|status|status-with-workloads|fetch-config|append-config|remove-config|set-log-level|set-env
+                stop|start|status|status-with-workloads|fetch-config|append-config|remove-config|set-log-level|set-env|enable-ebpf|disable-ebpf
                 [-m ec2|onPremise|onPrem|auto]
                 [-c default|all|ssm:<parameter-store-name>|file:<file-path>]
                 [-s]
@@ -59,6 +67,8 @@ UsageString="
             remove-config:                          remove config for agent, followed by -c. Target config can be based on the location (ssm parameter store name, file name), or 'all'.
             set-log-level:                          sets the log level, followed by -l to provide the level in all caps.
             set-env:                                sets an environment variable for the agent process, followed by -e to provide KEY=VALUE.
+            enable-ebpf:                            turn on eBPF (ADOT OBI) instrumentation: runs the agent as cwagent with the eBPF capabilities and loads etc/ebpf/obi.yaml. Restarts the agent, or starts it (with the default config if none) when it is stopped.
+            disable-ebpf:                           turn off eBPF instrumentation (the default) and restart the agent if it is running.
 
         -m: mode
             ec2:                                    indicate this is on ec2 host.
@@ -189,6 +199,56 @@ agent_preun() {
      fi
 }
 
+ebpf_status() {
+     if [ -f "${EBPF_MARKER}" ]; then
+          echo "enabled"
+     else
+          echo "disabled"
+     fi
+}
+
+enable_ebpf() {
+     mode="${1:-}"
+
+     if [ "${SYSTEMD}" != 'true' ]; then
+          echo "enable-ebpf requires systemd" >&2
+          exit 1
+     fi
+     if [ ! -f "${EBPF_DROPIN_TEMPLATE}" ]; then
+          echo "eBPF systemd drop-in template ${EBPF_DROPIN_TEMPLATE} not found" >&2
+          exit 1
+     fi
+     mkdir -p "${EBPF_DIR}" "${EBPF_DROPIN_DIR}"
+     touch "${EBPF_MARKER}"
+     cp -f "${EBPF_DROPIN_TEMPLATE}" "${EBPF_DROPIN}"
+     systemctl daemon-reload
+     echo "eBPF enabled"
+
+     if [ "$(runstatus ${CWA_NAME})" = 'running' ]; then
+          systemctl restart "${CWA_NAME}.service"
+     else
+          start_all "${mode}"
+     fi
+}
+
+disable_ebpf() {
+     rm -f "${EBPF_MARKER}" "${EBPF_DROPIN}"
+     rmdir "${EBPF_DROPIN_DIR}" 2>/dev/null || :
+     if [ "${SYSTEMD}" = 'true' ]; then
+          systemctl daemon-reload
+     fi
+     echo "eBPF disabled"
+
+     if [ "$(runstatus ${CWA_NAME})" = 'running' ]; then
+          if [ "${SYSTEMD}" = 'true' ]; then
+               systemctl restart "${CWA_NAME}.service"
+          else
+               stop "${CWA_NAME}"
+               start "${CWA_NAME}"
+          fi
+     fi
+}
+
 cwa_status() {
      include_workloads="${1:-false}"
 
@@ -203,6 +263,7 @@ cwa_status() {
      echo "  \"status\": \"$(runstatus ${CWA_NAME})\","
      echo "  \"starttime\": \"$(get_starttime_fmt ${CWA_NAME})\","
      echo "  \"configstatus\": \"${cwa_config_status}\","
+     echo "  \"ebpf\": \"$(ebpf_status)\","
      if [ "${include_workloads}" = "true" ]; then
           workloads_json="[]"
           if [ -x "${WORKLOAD_DISCOVERY}" ]; then
@@ -478,6 +539,8 @@ main() {
      preun) preun_all ;;
      set-log-level) set_log_level_all "${log_level}" ;;
      set-env) set_env "${env_kv}" ;;
+     enable-ebpf) enable_ebpf "${mode}" ;;
+     disable-ebpf) disable_ebpf ;;
      *)
           echo "Invalid action: ${action} ${UsageString}" >&2
           exit 1

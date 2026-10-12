@@ -2,7 +2,8 @@
 #   /opt/aws/amazon-cloudwatch-agent/etc/ebpf/obi.yaml   (%config(noreplace))
 # It lives outside etc/amazon-cloudwatch-agent.d/ so that
 # `amazon-cloudwatch-agent-ctl -a fetch-config` (which empties that dir) keeps it.
-# start-amazon-cloudwatch-agent passes it as the FIRST -otelconfig.
+# eBPF is opt-in: start-amazon-cloudwatch-agent passes it as the FIRST
+# -otelconfig only when etc/ebpf/enabled exists.
 #
 # To change it, edit this file: rpm upgrades keep your edits.
 # A YAML in etc/amazon-cloudwatch-agent.d/ CANNOT override the components defined
@@ -10,8 +11,9 @@
 # exporters, extensions and service::pipelines, and fails to start with
 #   E! Error running agent: failed to merge OTEL configs: merge conflict in receivers: [obi]
 # Such a YAML may only add components with different names.
-# To turn eBPF off:
-#   touch /opt/aws/amazon-cloudwatch-agent/etc/ebpf/disabled && systemctl restart amazon-cloudwatch-agent
+# To turn eBPF on / off:
+#   amazon-cloudwatch-agent-ctl -a enable-ebpf
+#   amazon-cloudwatch-agent-ctl -a disable-ebpf
 # Source: adot-obi config/otel.yaml.
 #
 #   AWS_REGION      X-Ray / CloudWatch region          (default us-west-2)
