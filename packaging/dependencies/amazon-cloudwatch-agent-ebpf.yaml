@@ -44,6 +44,10 @@ receivers:
     # exclude_instrument entry does (exclude wins). k8s_* keys never match a process
     # without Kubernetes metadata, so those entries are inert on EC2 / ECS.
     discovery:
+      # A process without OTEL_SERVICE_NAME is named from its package.json /
+      # pyproject.toml / JAR / main class / script instead of python3, node,
+      # java; Kubernetes names still win. false = upstream (executable) naming.
+      service_name_from_cmdline: true
       instrument:
         # EC2 / ECS: common service ports (ping: 8000; eks-auto: 8080-8083, 8443).
         # OBI matches every local inet port of a process, not only listeners, so keep
