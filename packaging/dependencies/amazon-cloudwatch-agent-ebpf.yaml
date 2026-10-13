@@ -105,6 +105,14 @@ processors:
           - replace_pattern(attributes["host.ip"], "-", ".") where attributes["host.ip"] != nil
           - set(attributes["aws.vpc.id"], "${env:AWS_VPC_ID}") where "${env:AWS_VPC_ID}" != ""
           - set(attributes["aws.subnet.id"], "${env:AWS_SUBNET_ID}") where "${env:AWS_SUBNET_ID}" != ""
+      # Lambda Invoke by bare function name: OBI cannot know the account, so complete
+      # aws.lambda.function.arn from the host's cloud.account.id (the caller's account
+      # unless it uses cross-account credentials) + faas.invoked_region / _name.
+      - context: span
+        statements:
+          - set(attributes["aws.lambda.function.arn"], Concat(["arn:aws:lambda:", attributes["faas.invoked_region"], ":", resource.attributes["cloud.account.id"], ":function:", attributes["faas.invoked_name"]], "")) where attributes["aws.lambda.function.arn"] == nil and attributes["faas.invoked_name"] != nil and attributes["faas.invoked_region"] != nil and resource.attributes["cloud.account.id"] != nil
+          - replace_pattern(attributes["aws.lambda.function.arn"], "^arn:aws:lambda:cn-", "arn:aws-cn:lambda:cn-") where attributes["aws.lambda.function.arn"] != nil
+          - replace_pattern(attributes["aws.lambda.function.arn"], "^arn:aws:lambda:us-gov-", "arn:aws-us-gov:lambda:us-gov-") where attributes["aws.lambda.function.arn"] != nil
     metric_statements:
       - context: resource
         statements:
@@ -117,6 +125,14 @@ processors:
           - replace_pattern(attributes["host.ip"], "-", ".") where attributes["host.ip"] != nil
           - set(attributes["aws.vpc.id"], "${env:AWS_VPC_ID}") where "${env:AWS_VPC_ID}" != ""
           - set(attributes["aws.subnet.id"], "${env:AWS_SUBNET_ID}") where "${env:AWS_SUBNET_ID}" != ""
+      # Lambda Invoke by bare function name: OBI cannot know the account, so complete
+      # aws.lambda.function.arn from the host's cloud.account.id (the caller's account
+      # unless it uses cross-account credentials) + faas.invoked_region / _name.
+      - context: datapoint
+        statements:
+          - set(attributes["aws.lambda.function.arn"], Concat(["arn:aws:lambda:", attributes["faas.invoked_region"], ":", resource.attributes["cloud.account.id"], ":function:", attributes["faas.invoked_name"]], "")) where attributes["aws.lambda.function.arn"] == nil and attributes["faas.invoked_name"] != nil and attributes["faas.invoked_region"] != nil and resource.attributes["cloud.account.id"] != nil
+          - replace_pattern(attributes["aws.lambda.function.arn"], "^arn:aws:lambda:cn-", "arn:aws-cn:lambda:cn-") where attributes["aws.lambda.function.arn"] != nil
+          - replace_pattern(attributes["aws.lambda.function.arn"], "^arn:aws:lambda:us-gov-", "arn:aws-us-gov:lambda:us-gov-") where attributes["aws.lambda.function.arn"] != nil
   # CloudWatch OTLP metrics require delta temporality; OBI emits cumulative.
   cumulativetodelta: {}
   # CloudWatch OTLP accepts at most 1000 datapoints per request.
