@@ -26,8 +26,11 @@ receivers:
     log_level: INFO
     ebpf:
       bpf_fs_base_dir: /sys/fs/bpf
-      # Pinned: cwagent's obi receiver defaults to "tcp".
-      context_propagation: "all"
+      # Servers return their service.name to the client in a TCP option (kind 26,
+      # patch 01) -> peer.service.name; also cwagent's obi receiver default. Only
+      # to peers inside the VPC unless tcp_service_name_outside_vpc: true. No trace
+      # context and no HTTP header injection: the application payload is never modified.
+      context_propagation: "tcp_service_name"
       # false (OBI's default): a server request ends when its response is complete.
       # true submits it at the first response write, which dropped ~31% of
       # requests whose downstream calls were slow or timed out (ping demo, 2026-10-09).
