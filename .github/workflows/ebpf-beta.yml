@@ -7,6 +7,9 @@ name: ebpf-beta
 #   gates  tidy + dependency-version gate + unit tests + linux/arm64 + windows builds
 #   e2e    agent with restricted capabilities on the runner's kernel (sudo + capsh)
 #   rpm    make package-rpm (amd64 + arm64) -> workflow artifact
+#   image  official-layout image (ebpf-beta/image/Dockerfile), linux/amd64 + arm64, pushed to
+#          ghcr.io/<owner>/cloudwatch-agent-ebpf-beta:<sha7> (+ latest on branch ebpf-beta,
+#          + <release> on a release run); pull requests only build and smoke-test it
 #   release  manual run (Actions > ebpf-beta > Run workflow) with input "release", e.g.
 #            1.300074.0-ebpfbeta.1: GitHub pre-release v<release> with the RPMs, tag created
 #            on the built commit. A tag made with GITHUB_TOKEN triggers no other workflow;
@@ -106,9 +109,46 @@ jobs:
         if: always()
         with: { name: logs-rpm, path: build/ebpf-beta-logs/, if-no-files-found: ignore }
 
+  image:
+    needs: [gates, e2e]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    env:
+      PUSH: ${{ github.event_name != 'pull_request' && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with: { go-version-file: go.mod, cache: true }
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        if: env.PUSH == '1'
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      - name: image
+        env:
+          RELEASE: ${{ inputs.release }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          sha=${GITHUB_SHA::7}
+          export VERSION=${RELEASE:-1.300074.0-ebpfbeta.$sha}
+          export IMAGE=ghcr.io/${OWNER,,}/cloudwatch-agent-ebpf-beta
+          tags="$sha"
+          [[ $GITHUB_REF == refs/heads/ebpf-beta ]] && tags="$tags latest"
+          [[ -n $RELEASE ]] && tags="$tags $RELEASE"
+          export IMAGE_TAGS=$tags IMAGE_PUSH=$PUSH
+          ebpf-beta/ci/run.sh image
+          if [[ $PUSH == 1 ]]; then
+            for t in $tags; do echo "- \`$IMAGE:$t\`" >> "$GITHUB_STEP_SUMMARY"; done
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with: { name: logs-image, path: build/ebpf-beta-logs/, if-no-files-found: ignore }
+
   release:
     if: github.event_name == 'workflow_dispatch' && inputs.release != ''
-    needs: rpm
+    needs: [rpm, image]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -123,7 +163,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.rpm.outputs.version }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          OWNER: ${{ github.repository_owner }}
         run: |
           gh release create "v$VERSION" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
             --title "CloudWatch Agent eBPF beta $VERSION" \
-            --notes "CloudWatch Agent v1.300074.0 + OBI eBPF receiver (source: third_party/obi/ADOT_OBI_SOURCE). Built by $RUN_URL"
+            --notes "CloudWatch Agent v1.300074.0 + OBI eBPF receiver (source: third_party/obi/ADOT_OBI_SOURCE). Image: ghcr.io/${OWNER,,}/cloudwatch-agent-ebpf-beta:$VERSION (linux/amd64, linux/arm64). Built by $RUN_URL"

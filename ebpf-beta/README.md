@@ -10,6 +10,7 @@ this branch alone:
 | `packaging/dependencies/amazon-cloudwatch-agent-ebpf.{yaml,conf}` | RPM default eBPF config (`etc/ebpf/obi.yaml`) and systemd drop-in |
 | `ebpf-beta/ci/` | `run.sh` (all checks), dependency-version gate and its v1.300074.0 baselines |
 | `ebpf-beta/e2e/` | runtime test with restricted capabilities |
+| `ebpf-beta/image/Dockerfile` | official CloudWatch Agent image layout + `etc/ebpf/obi.yaml` |
 | `ebpf-beta/configtest/` | the RPM eBPF config must validate with the agent's components |
 | `.github/workflows/ebpf-beta.yml` | CI: gates, e2e, RPM; manual release |
 
@@ -27,9 +28,18 @@ ebpf-beta/ci/run.sh rpm          # RPMs in build/ebpf-beta/bin/linux/{amd64,arm6
 VERSION=1.300074.0-ebpfbeta.1 ebpf-beta/ci/run.sh rpm
 ```
 
+## Image
+
+`ebpf-beta/ci/run.sh image` builds the image (linux/amd64 into the local docker, smoke-tested);
+CI pushes linux/amd64 + linux/arm64 to `ghcr.io/<owner>/cloudwatch-agent-ebpf-beta` as `<sha7>`,
+`latest` (branch `ebpf-beta`) and `<release>`. Same layout and entrypoint as the official
+`amazon/cloudwatch-agent` image, so it can replace it (EKS add-on / operator). eBPF is off, as in
+the RPM, until `/opt/aws/amazon-cloudwatch-agent/etc/ebpf/enabled` exists (mount an empty file);
+the container then needs the eBPF capabilities (or `privileged`) and host PID.
+
 ## Release
 
 Actions > ebpf-beta > Run workflow, with `release` set (e.g. `1.300074.0-ebpfbeta.1`): runs all
-checks, then creates the GitHub pre-release `v<release>` with both RPMs. Do not push `v*` tags by
+checks, pushes the image tag `<release>`, then creates the GitHub pre-release `v<release>` with both RPMs. Do not push `v*` tags by
 hand: they start upstream workflows that need CloudWatch Agent team AWS roles. Publishing to SSM
 Distributor is manual (adot-obi `distributor/publish.sh`).
