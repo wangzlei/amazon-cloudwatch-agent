@@ -42,6 +42,10 @@ receivers:
         http:
           aws:
             enabled: true
+      # Halve every resizable BPF map (OBI scales sizes by 2^factor, -3..3) to
+      # save kernel memory; 0 = upstream sizes.
+      maps_config:
+        global_scale_factor: -1
     # One filter for EC2, ECS and EKS. Within an entry all keys must match (AND);
     # a process is picked when any instrument entry matches (OR) and no
     # exclude_instrument entry does (exclude wins). k8s_* keys never match a process
