@@ -23,7 +23,7 @@ Needs Linux, Go and docker. OBI's BPF bindings are not committed: `make ebpf-gen
 them in OBI's pinned generator image, and the Linux build targets run it first.
 
 ```
-ebpf-beta/ci/run.sh              # gates + e2e (e2e needs sudo)
+ebpf-beta/ci/run.sh              # gates (= deps unit cross) + e2e (e2e needs sudo)
 ebpf-beta/ci/run.sh rpm          # RPMs in build/ebpf-beta/bin/linux/{amd64,arm64}/
 VERSION=1.300074.0-ebpfbeta.1 ebpf-beta/ci/run.sh rpm
 ```

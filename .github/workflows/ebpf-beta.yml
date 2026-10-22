@@ -4,7 +4,8 @@ name: ebpf-beta
 # patched OBI in third_party/obi). Every job runs ebpf-beta/ci/run.sh, which first
 # generates OBI's BPF bindings in its pinned generator image (they are not committed).
 #
-#   gates  tidy + dependency-version gate + unit tests + linux/arm64 + windows builds
+#   gates  three parallel jobs: deps (tidy + dependency-version gate + vet), unit (tests),
+#          cross (linux/amd64, linux/arm64, windows/amd64 builds)
 #   e2e    agent with restricted capabilities on the runner's kernel (sudo + capsh)
 #   rpm    make package-rpm (amd64 + arm64) -> workflow artifact
 #   image  official-layout image (ebpf-beta/image/Dockerfile), linux/amd64 + arm64, pushed to
@@ -40,6 +41,11 @@ concurrency:
 
 jobs:
   gates:
+    name: gates (${{ matrix.stage }})
+    strategy:
+      fail-fast: false
+      matrix:
+        stage: [deps, unit, cross]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -47,11 +53,14 @@ jobs:
         with: { persist-credentials: false }
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with: { go-version-file: go.mod, cache: true }
-      - name: gates
-        run: ebpf-beta/ci/run.sh gates
+      - name: ${{ matrix.stage }}
+        run: ebpf-beta/ci/run.sh "${{ matrix.stage }}"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
-        with: { name: logs-gates, path: build/ebpf-beta-logs/, if-no-files-found: ignore }
+        with:
+          name: logs-${{ matrix.stage }}
+          path: build/ebpf-beta-logs/
+          if-no-files-found: ignore
 
   e2e:
     runs-on: ubuntu-latest
