@@ -34,6 +34,7 @@ func TestComponents(t *testing.T) {
 		"kafka",
 		"kubeletstats",
 		"nop",
+		"obi",
 		"otlp",
 		"prometheus",
 		"postgresql",

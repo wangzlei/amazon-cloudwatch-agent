@@ -35,6 +35,15 @@ DOCKER_BUILD_FROM_SOURCE = docker build -t $(IMAGE) -f ./amazon-cloudwatch-conta
 DOCKER_WINDOWS_BUILD_FROM_SOURCE = docker build -t $(IMAGE) -f ./amazon-cloudwatch-container-insights/cloudwatch-agent-dockerfile/source/Dockerfile.Windows
 
 CW_AGENT_IMPORT_PATH=github.com/aws/amazon-cloudwatch-agent
+
+# ebpf-beta: the BPF bindings of third_party/obi (*_bpfel.go / *_bpfel.o) are not
+# committed. ebpf-generate builds them in OBI's pinned generator image (needs docker;
+# EBPF_OCI_BIN="sudo docker" if docker needs root). OBI's generate is incremental:
+# a no-op when the bindings are newer than their C sources.
+EBPF_OCI_BIN ?= docker
+.PHONY: ebpf-generate
+ebpf-generate:
+	$(MAKE) -C third_party/obi docker-generate OCI_BIN="$(EBPF_OCI_BIN)"
 ALL_SRC := $(shell find . -name '*.go' -type f | sort)
 TOOLS_BIN_DIR := $(abspath ./build/tools)
 
@@ -69,7 +78,7 @@ copy-version-file: create-version-file
 
 amazon-cloudwatch-agent-linux: amazon-cloudwatch-agent-linux-amd64 amazon-cloudwatch-agent-linux-arm64
 
-amazon-cloudwatch-agent-linux-amd64: copy-version-file workload-discovery-linux
+amazon-cloudwatch-agent-linux-amd64: ebpf-generate copy-version-file workload-discovery-linux
 	@echo Building CloudWatchAgent for Linux AMD64
 	$(LINUX_AMD64_BUILD)/config-downloader github.com/aws/amazon-cloudwatch-agent/cmd/config-downloader
 	$(LINUX_AMD64_BUILD)/config-translator github.com/aws/amazon-cloudwatch-agent/cmd/config-translator
@@ -77,7 +86,7 @@ amazon-cloudwatch-agent-linux-amd64: copy-version-file workload-discovery-linux
 	$(LINUX_AMD64_BUILD)/start-amazon-cloudwatch-agent github.com/aws/amazon-cloudwatch-agent/cmd/start-amazon-cloudwatch-agent
 	$(LINUX_AMD64_BUILD)/amazon-cloudwatch-agent-config-wizard github.com/aws/amazon-cloudwatch-agent/cmd/amazon-cloudwatch-agent-config-wizard
 
-amazon-cloudwatch-agent-linux-arm64: copy-version-file workload-discovery-linux
+amazon-cloudwatch-agent-linux-arm64: ebpf-generate copy-version-file workload-discovery-linux
 	@echo Building CloudWatchAgent for Linux ARM64
 	$(LINUX_ARM64_BUILD)/config-downloader github.com/aws/amazon-cloudwatch-agent/cmd/config-downloader
 	$(LINUX_ARM64_BUILD)/config-translator github.com/aws/amazon-cloudwatch-agent/cmd/config-translator
@@ -138,7 +147,7 @@ workload-discovery-windows:
 # A fast build that only builds amd64, we don't need wizard and config downloader
 build-for-docker: build-for-docker-amd64
 
-build-for-docker-amd64:
+build-for-docker-amd64: ebpf-generate
 	$(LINUX_AMD64_BUILD)/amazon-cloudwatch-agent github.com/aws/amazon-cloudwatch-agent/cmd/amazon-cloudwatch-agent
 	$(LINUX_AMD64_BUILD)/start-amazon-cloudwatch-agent github.com/aws/amazon-cloudwatch-agent/cmd/start-amazon-cloudwatch-agent
 	$(LINUX_AMD64_BUILD)/config-translator github.com/aws/amazon-cloudwatch-agent/cmd/config-translator
@@ -149,7 +158,7 @@ build-for-docker-windows-amd64:
 	$(WIN_BUILD)/start-amazon-cloudwatch-agent.exe github.com/aws/amazon-cloudwatch-agent/cmd/start-amazon-cloudwatch-agent
 	$(WIN_BUILD)/config-translator.exe github.com/aws/amazon-cloudwatch-agent/cmd/config-translator
 
-build-for-docker-arm64:
+build-for-docker-arm64: ebpf-generate
 	$(LINUX_ARM64_BUILD)/amazon-cloudwatch-agent github.com/aws/amazon-cloudwatch-agent/cmd/amazon-cloudwatch-agent
 	$(LINUX_ARM64_BUILD)/start-amazon-cloudwatch-agent github.com/aws/amazon-cloudwatch-agent/cmd/start-amazon-cloudwatch-agent
 	$(LINUX_ARM64_BUILD)/config-translator github.com/aws/amazon-cloudwatch-agent/cmd/config-translator

@@ -79,6 +79,7 @@ import (
 	"go.opentelemetry.io/collector/receiver/otlpreceiver"
 	"go.opentelemetry.io/collector/service/telemetry/otelconftelemetry"
 
+	"github.com/aws/amazon-cloudwatch-agent/receiver/obireceiver"
 	"github.com/aws/amazon-cloudwatch-agent/extension/agenthealth"
 	"github.com/aws/amazon-cloudwatch-agent/extension/entitystore"
 	"github.com/aws/amazon-cloudwatch-agent/extension/k8smetadata"
@@ -119,6 +120,7 @@ func Factories() (otelcol.Factories, error) {
 		kafkareceiver.NewFactory(),
 		kubeletstatsreceiver.NewFactory(),
 		nopreceiver.NewFactory(),
+		obireceiver.NewFactory(),
 		otlpreceiver.NewFactory(),
 		prometheusreceiver.NewFactory(),
 		postgresqlreceiver.NewFactory(),
