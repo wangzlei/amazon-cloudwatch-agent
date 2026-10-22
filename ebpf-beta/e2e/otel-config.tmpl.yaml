@@ -1,0 +1,36 @@
+# CloudWatch Agent OTel YAML for the OBI e2e test (rendered by run-e2e.sh).
+# Output goes only to the debug exporter (plain text on the agent's stdout);
+# nothing is sent to AWS. (cwagent rejects non-AWS otlphttp endpoints, so a
+# local OTLP sink is not an option.)
+receivers:
+  obi:
+    discovery:
+      instrument:
+        - open_ports: "@FRONTEND_PORT@"
+          name: e2e-frontend
+        - open_ports: "@BACKEND_PORT@"
+          name: e2e-backend
+    ebpf:
+      context_propagation: "@CP@"
+    attributes:
+      kubernetes:
+        enable: "false"
+    otel_metrics_export:
+      interval: 5s
+    otel_traces_export:
+      batch_timeout: 2s
+exporters:
+  debug:
+    verbosity: detailed
+    use_internal_logger: false
+service:
+  pipelines:
+    metrics:
+      receivers: [obi]
+      exporters: [debug]
+    traces:
+      receivers: [obi]
+      exporters: [debug]
+  telemetry:
+    logs:
+      level: info

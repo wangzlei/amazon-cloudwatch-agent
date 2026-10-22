@@ -1,0 +1,129 @@
+name: ebpf-beta
+
+# CloudWatch Agent eBPF beta (branch ebpf-beta: CloudWatch Agent v1.300074.0 + vendored,
+# patched OBI in third_party/obi). Every job runs ebpf-beta/ci/run.sh, which first
+# generates OBI's BPF bindings in its pinned generator image (they are not committed).
+#
+#   gates  tidy + dependency-version gate + unit tests + linux/arm64 + windows builds
+#   e2e    agent with restricted capabilities on the runner's kernel (sudo + capsh)
+#   rpm    make package-rpm (amd64 + arm64) -> workflow artifact
+#   release  manual run (Actions > ebpf-beta > Run workflow) with input "release", e.g.
+#            1.300074.0-ebpfbeta.1: GitHub pre-release v<release> with the RPMs, tag created
+#            on the built commit. A tag made with GITHUB_TOKEN triggers no other workflow;
+#            pushing a v* tag by hand would also start upstream's record-binary-sizes /
+#            hydrate-goproxy, which need CloudWatch Agent team AWS roles.
+#
+# Publishing to SSM Distributor stays manual (distributor/publish.sh): this workflow has
+# no AWS credentials.
+
+on:
+  push:
+    branches: [ebpf-beta, 'ebpf-beta/**']
+  pull_request:
+    branches: [ebpf-beta, 'ebpf-beta/**']
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Release version (e.g. 1.300074.0-ebpfbeta.1): creates GitHub pre-release v<version>. Empty = build only.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ebpf-beta-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with: { go-version-file: go.mod, cache: true }
+      - name: gates
+        run: ebpf-beta/ci/run.sh gates
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with: { name: logs-gates, path: build/ebpf-beta-logs/, if-no-files-found: ignore }
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with: { go-version-file: go.mod, cache: true }
+      - name: Kernel
+        run: uname -a; stat -fc %T /sys/fs/cgroup; command -v capsh || sudo apt-get install -y libcap2-bin
+      - name: e2e
+        run: ebpf-beta/ci/run.sh e2e
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with: { name: logs-e2e, path: build/ebpf-beta-logs/, if-no-files-found: ignore }
+
+  rpm:
+    needs: [gates, e2e]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with: { go-version-file: go.mod, cache: true }
+      - name: Version
+        id: v
+        env: { RELEASE: "${{ inputs.release }}" }
+        run: |
+          # release input (manual run) or 1.300074.0-ebpfbeta.<sha7>
+          v=${RELEASE:-1.300074.0-ebpfbeta.${GITHUB_SHA::7}}
+          [[ $v =~ ^[a-zA-Z0-9_.-]{1,128}$ ]] || { echo "invalid version $v"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - name: rpm
+        env: { VERSION: "${{ steps.v.outputs.version }}" }
+        run: |
+          command -v rpmbuild || sudo apt-get install -y rpm
+          ebpf-beta/ci/run.sh rpm
+      - name: Collect RPMs
+        env: { VERSION: "${{ steps.v.outputs.version }}" }
+        run: |
+          mkdir -p dist
+          cp build/ebpf-beta/bin/linux/amd64/amazon-cloudwatch-agent.rpm "dist/amazon-cloudwatch-agent-$VERSION.x86_64.rpm"
+          cp build/ebpf-beta/bin/linux/arm64/amazon-cloudwatch-agent.rpm "dist/amazon-cloudwatch-agent-$VERSION.aarch64.rpm"
+          (cd dist && sha256sum *.rpm | tee SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rpm-${{ steps.v.outputs.version }}
+          path: dist/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with: { name: logs-rpm, path: build/ebpf-beta-logs/, if-no-files-found: ignore }
+
+  release:
+    if: github.event_name == 'workflow_dispatch' && inputs.release != ''
+    needs: rpm
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: rpm-${{ needs.rpm.outputs.version }}
+          path: dist
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.rpm.outputs.version }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh release create "v$VERSION" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+            --title "CloudWatch Agent eBPF beta $VERSION" \
+            --notes "CloudWatch Agent v1.300074.0 + OBI eBPF receiver (source: third_party/obi/ADOT_OBI_SOURCE). Built by $RUN_URL"

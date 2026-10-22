@@ -1,0 +1,18 @@
+# Version changes of modules that cwagent v1.300074.0 already selects, accepted
+# when adding OBI. One line per bump:  module old -> new | forced by | reason
+# Checked by ci/check-versions.sh (go.mod mode and --full mode).
+#
+# --- in cwagent's go.mod (packages compiled into the agent) ---
+github.com/BurntSushi/toml v1.4.0 -> v1.6.0 | github.com/cilium/ebpf v0.22.0 | OBI's eBPF loader + bpf2go bindings need cilium/ebpf v0.22.0; cwagent's graph has v0.17.3. Downgrading cilium/ebpf means regenerating all bindings with an older bpf2go and losing loader fixes OBI v0.12.2 relies on - not done. toml minor bump (cwagent TOML config parsing) is backwards compatible.
+github.com/mdlayher/socket v0.4.1 -> v0.5.1 | github.com/cilium/ebpf v0.22.0 | same root cause as toml (cilium/ebpf v0.21.0+ requires socket v0.5.1)
+#
+# --- graph-only (selected in `go list -m all` but pruned from cwagent's go.mod: not compiled into the agent) ---
+github.com/cilium/ebpf v0.17.3 -> v0.22.0 | go.opentelemetry.io/obi | required by OBI itself (see above)
+github.com/containerd/stargz-snapshotter/estargz v0.14.3 -> v0.16.3 | github.com/cilium/ebpf v0.22.0 | cilium/ebpf tool deps
+github.com/docker/cli v24.0.0+incompatible -> v29.2.0+incompatible | github.com/cilium/ebpf v0.22.0 | cilium/ebpf tool deps
+github.com/docker/docker-credential-helpers v0.7.0 -> v0.9.3 | github.com/cilium/ebpf v0.22.0 | cilium/ebpf tool deps
+github.com/google/go-containerregistry v0.20.1 -> v0.20.6 | github.com/cilium/ebpf v0.22.0 | cilium/ebpf tool deps
+github.com/vbatts/tar-split v0.11.3 -> v0.12.1 | github.com/cilium/ebpf v0.22.0 | cilium/ebpf tool deps
+honnef.co/go/tools v0.0.1-2020.1.4 -> v0.7.0 | github.com/cilium/ebpf v0.22.0 | cilium/ebpf tool deps (staticcheck)
+github.com/agnivade/levenshtein v1.2.0 -> v1.2.1 | github.com/vektah/gqlparser/v2 v2.5.36 | OBI GraphQL payload parser; patch-level, graph-only
+go.opentelemetry.io/collector/exporter/otlpexporter v0.111.0 -> v0.150.0 | go.opentelemetry.io/obi | stale v0.111.0 entry in cwagent's graph; v0.150.0 is cwagent's own collector release train
