@@ -17,7 +17,7 @@
 #   amazon-cloudwatch-agent-ctl -a disable-ebpf
 # Source: adot-obi config/otel.yaml.
 #
-#   CWAGENT_REGION  CloudWatch (and, if enabled, X-Ray) region (default us-west-2). Set by the agent's config
+#   CWAGENT_REGION  X-Ray / CloudWatch region (default us-west-2). Set by the agent's config
 #                   translation (env-config.json) to the region the agent resolved for itself:
 #                   agent.region, credentials profile / AWS_REGION, EC2 / ECS metadata, else the
 #                   AWS_REGION environment variable. eBPF data goes to the agent's region.
@@ -63,9 +63,9 @@ receivers:
         # OBI matches every local inet port of a process, not only listeners, so keep
         # ranges below the ephemeral range (32768-60999). Not an env var: a
         # single-port value would be typed as an int and rejected by OBI.
-        # exports: "metrics" = RED metrics only, no spans (traces are off by default).
-        # For traces too: exports: "metrics,traces" on these entries, plus the
-        # X-Ray exporter, sigv4auth extension and traces pipeline (see the end of this file).
+        # exports: "metrics" = RED metrics only: OBI builds no spans, so the traces
+        # pipeline below stays idle (traces are off by default). For traces to X-Ray
+        # too: exports: "metrics,traces" on these entries.
         - open_ports: "80,443,3000,5000,8000-8099,8443,8888,9000"
           exports: "metrics"
         # EKS: every Deployment / StatefulSet pod, whatever its ports.
@@ -96,6 +96,9 @@ receivers:
       features: "application"
 
 extensions:
+  sigv4auth/cwagent_ebpf_xray:
+    region: ${env:CWAGENT_REGION:-us-west-2}
+    service: xray
   sigv4auth/cwagent_ebpf_monitoring:
     region: ${env:CWAGENT_REGION:-us-west-2}
     service: monitoring
@@ -158,25 +161,23 @@ exporters:
   debug/cwagent_ebpf:
     verbosity: basic
   # otlp_http compresses with gzip by default.
+  otlp_http/cwagent_ebpf_xray:
+    traces_endpoint: https://xray.${env:CWAGENT_REGION:-us-west-2}.amazonaws.com/v1/traces
+    auth:
+      authenticator: sigv4auth/cwagent_ebpf_xray
   otlp_http/cwagent_ebpf_cloudwatch:
     metrics_endpoint: https://monitoring.${env:CWAGENT_REGION:-us-west-2}.amazonaws.com/v1/metrics
     auth:
       authenticator: sigv4auth/cwagent_ebpf_monitoring
 
 service:
-  extensions: [sigv4auth/cwagent_ebpf_monitoring]
+  extensions: [sigv4auth/cwagent_ebpf_xray, sigv4auth/cwagent_ebpf_monitoring]
   pipelines:
+    traces/cwagent_ebpf:
+      receivers: [obi/cwagent_ebpf]
+      processors: [transform/cwagent_ebpf_aws, batch/cwagent_ebpf]
+      exporters: [otlp_http/cwagent_ebpf_xray, debug/cwagent_ebpf]
     metrics/cwagent_ebpf:
       receivers: [obi/cwagent_ebpf]
       processors: [transform/cwagent_ebpf_aws, cumulativetodelta/cwagent_ebpf, batch/cwagent_ebpf]
       exporters: [otlp_http/cwagent_ebpf_cloudwatch, debug/cwagent_ebpf]
-# Traces (off by default). To send spans to X-Ray, add:
-#   extensions:  sigv4auth/cwagent_ebpf_xray: {region: <same as above>, service: xray}
-#                and list it in service::extensions
-#   exporters:   otlp_http/cwagent_ebpf_xray:
-#                  traces_endpoint: https://xray.<region>.amazonaws.com/v1/traces
-#                  auth: {authenticator: sigv4auth/cwagent_ebpf_xray}
-#   pipelines:   traces/cwagent_ebpf: {receivers: [obi/cwagent_ebpf],
-#                  processors: [transform/cwagent_ebpf_aws, batch/cwagent_ebpf],
-#                  exporters: [otlp_http/cwagent_ebpf_xray]}
-#   and exports: "metrics,traces" on the discovery instrument entries.

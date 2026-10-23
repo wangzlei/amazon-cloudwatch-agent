@@ -52,30 +52,20 @@ func TestRPMDefaultEBPFConfigValidates(t *testing.T) {
 	require.NoError(t, col.DryRun(context.Background()))
 }
 
-// Traces are off by default: RED metrics only (no traces pipeline, discovery exports
-// metrics only, so OBI does not build spans).
-func TestRPMDefaultEBPFConfigIsMetricsOnly(t *testing.T) {
+// Traces are off by default: every discovery instrument entry exports metrics only, so
+// OBI builds no spans and the traces pipeline stays idle until exports includes traces.
+func TestRPMDefaultEBPFConfigExportsMetricsOnly(t *testing.T) {
 	setCreds(t)
 	r, err := confmap.NewResolver(configprovider.GetSettings([]string{rpmConfig}, zap.NewNop()).ResolverSettings)
 	require.NoError(t, err)
 	conf, err := r.Resolve(context.Background())
 	require.NoError(t, err)
-	pipelines := conf.Get("service::pipelines").(map[string]any)
-	assert.Equal(t, []string{"metrics/cwagent_ebpf"}, keys(pipelines))
 	for _, e := range conf.Get("receivers::obi/cwagent_ebpf::discovery::instrument").([]any) {
 		assert.Equal(t, "metrics", e.(map[string]any)["exports"], "instrument entry %v", e)
 	}
 }
 
-func keys(m map[string]any) []string {
-	var out []string
-	for k := range m {
-		out = append(out, k)
-	}
-	return out
-}
-
-// The exporter and sigv4auth use CWAGENT_REGION (the region the agent resolved, written to
+// The exporters and sigv4auth use CWAGENT_REGION (the region the agent resolved, written to
 // env-config.json by the translation), else us-west-2. AWS_REGION alone does not change it:
 // the translation folds it into CWAGENT_REGION when it is the agent's region.
 func TestRPMDefaultEBPFConfigRegion(t *testing.T) {
@@ -94,7 +84,9 @@ func TestRPMDefaultEBPFConfigRegion(t *testing.T) {
 			require.NoError(t, err)
 			conf, err := r.Resolve(context.Background())
 			require.NoError(t, err)
+			assert.Equal(t, "https://xray."+tc.want+".amazonaws.com/v1/traces", conf.Get("exporters::otlp_http/cwagent_ebpf_xray::traces_endpoint"))
 			assert.Equal(t, "https://monitoring."+tc.want+".amazonaws.com/v1/metrics", conf.Get("exporters::otlp_http/cwagent_ebpf_cloudwatch::metrics_endpoint"))
+			assert.Equal(t, tc.want, conf.Get("extensions::sigv4auth/cwagent_ebpf_xray::region"))
 			assert.Equal(t, tc.want, conf.Get("extensions::sigv4auth/cwagent_ebpf_monitoring::region"))
 		})
 	}
@@ -133,6 +125,6 @@ service:
 		require.NoError(t, result.Merge(conf))
 	}
 	pipelines := result.ToStringMap()["service"].(map[string]any)["pipelines"].(map[string]any)
-	assert.Contains(t, pipelines, "metrics/cwagent_ebpf")
+	assert.Contains(t, pipelines, "traces/cwagent_ebpf")
 	assert.Contains(t, pipelines, "traces")
 }
