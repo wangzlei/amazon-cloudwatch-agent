@@ -66,9 +66,8 @@ receivers:
         # OBI matches every local inet port of a process, not only listeners, so keep
         # ranges below the ephemeral range (32768-60999). Not an env var: a
         # single-port value would be typed as an int and rejected by OBI.
-        # exports: "metrics" = RED metrics only: OBI builds no spans, so the traces
-        # pipeline below stays idle (traces are off by default). For traces to X-Ray
-        # too: exports: "metrics,traces" on these entries.
+        # exports: "metrics" = RED metrics only: OBI builds no spans, and this config
+        # has no traces pipeline.
         - open_ports: "80,443,3000,5000,8000-8099,8443,8888,9000"
           exports: "metrics"
         # EKS: every Deployment / StatefulSet pod, whatever its ports.
@@ -101,14 +100,10 @@ receivers:
     # the socket / libssl probes count every request without it. On a node binary it
     # cost +340 us CPU per request and cut max throughput from 42k to 2.8k RPS on
     # c6i.2xlarge; disabled: +14 us, 25k RPS, RED exact (perf-ec2, 2026-10-23).
-    # Turning traces on with exports: "metrics,traces" does not need it either.
     nodejs:
       enabled: false
 
 extensions:
-  sigv4auth/cwagent_ebpf_xray:
-    region: ${env:CWAGENT_REGION:-us-west-2}
-    service: xray
   sigv4auth/cwagent_ebpf_monitoring:
     region: ${env:CWAGENT_REGION:-us-west-2}
     service: monitoring
@@ -119,26 +114,6 @@ processors:
   # VPC / subnet come in as AWS_VPC_ID / AWS_SUBNET_ID env and are skipped when unset.
   transform/cwagent_ebpf_aws:
     error_mode: ignore
-    trace_statements:
-      - context: resource
-        statements:
-          - set(attributes["ec2.instance.id"], attributes["host.id"]) where attributes["host.id"] != nil
-          - set(attributes["aws.account.id"], attributes["cloud.account.id"]) where attributes["cloud.account.id"] != nil
-          - set(attributes["aws.region"], attributes["cloud.region"]) where attributes["cloud.region"] != nil
-          - set(attributes["host.ip"], attributes["host.name"]) where attributes["host.name"] != nil and IsMatch(attributes["host.name"], "^ip-[0-9]+-[0-9]+-[0-9]+-[0-9]+")
-          - replace_pattern(attributes["host.ip"], "[.].*", "") where attributes["host.ip"] != nil
-          - replace_pattern(attributes["host.ip"], "^ip-", "") where attributes["host.ip"] != nil
-          - replace_pattern(attributes["host.ip"], "-", ".") where attributes["host.ip"] != nil
-          - set(attributes["aws.vpc.id"], "${env:AWS_VPC_ID}") where "${env:AWS_VPC_ID}" != ""
-          - set(attributes["aws.subnet.id"], "${env:AWS_SUBNET_ID}") where "${env:AWS_SUBNET_ID}" != ""
-      # Lambda Invoke by bare function name: OBI cannot know the account, so complete
-      # aws.lambda.function.arn from the host's cloud.account.id (the caller's account
-      # unless it uses cross-account credentials) + faas.invoked_region / _name.
-      - context: span
-        statements:
-          - set(attributes["aws.lambda.function.arn"], Concat(["arn:aws:lambda:", attributes["faas.invoked_region"], ":", resource.attributes["cloud.account.id"], ":function:", attributes["faas.invoked_name"]], "")) where attributes["aws.lambda.function.arn"] == nil and attributes["faas.invoked_name"] != nil and attributes["faas.invoked_region"] != nil and resource.attributes["cloud.account.id"] != nil
-          - replace_pattern(attributes["aws.lambda.function.arn"], "^arn:aws:lambda:cn-", "arn:aws-cn:lambda:cn-") where attributes["aws.lambda.function.arn"] != nil
-          - replace_pattern(attributes["aws.lambda.function.arn"], "^arn:aws:lambda:us-gov-", "arn:aws-us-gov:lambda:us-gov-") where attributes["aws.lambda.function.arn"] != nil
     metric_statements:
       - context: resource
         statements:
@@ -169,22 +144,14 @@ processors:
 
 exporters:
   # otlp_http compresses with gzip by default.
-  otlp_http/cwagent_ebpf_xray:
-    traces_endpoint: https://xray.${env:CWAGENT_REGION:-us-west-2}.amazonaws.com/v1/traces
-    auth:
-      authenticator: sigv4auth/cwagent_ebpf_xray
   otlp_http/cwagent_ebpf_cloudwatch:
     metrics_endpoint: https://monitoring.${env:CWAGENT_REGION:-us-west-2}.amazonaws.com/v1/metrics
     auth:
       authenticator: sigv4auth/cwagent_ebpf_monitoring
 
 service:
-  extensions: [sigv4auth/cwagent_ebpf_xray, sigv4auth/cwagent_ebpf_monitoring]
+  extensions: [sigv4auth/cwagent_ebpf_monitoring]
   pipelines:
-    traces/cwagent_ebpf:
-      receivers: [obi/cwagent_ebpf]
-      processors: [transform/cwagent_ebpf_aws, batch/cwagent_ebpf]
-      exporters: [otlp_http/cwagent_ebpf_xray]
     metrics/cwagent_ebpf:
       receivers: [obi/cwagent_ebpf]
       processors: [transform/cwagent_ebpf_aws, cumulativetodelta/cwagent_ebpf, batch/cwagent_ebpf]
