@@ -11,9 +11,11 @@
 #   cross  builds for linux/amd64 (kept for e2e), linux/arm64 and windows/amd64
 #   e2e    runs the agent with the shipped capability set (scenario tcp) and without
 #          CAP_NET_ADMIN/CAP_SYS_ADMIN (scenario nonetadmin); asserts RED metrics, spans
-#          and peer.service.name from the debug exporter output
+#          and peer.service.name from the debug exporter output, and that a secret sent in the
+#          query string, headers and response body never appears in the agent's output
 #   rpm    make package-rpm (amd64 + arm64), checks the version and the etc/ebpf payload,
-#          and builds the standalone tarball (ebpf-beta/binary) from each RPM
+#          builds the standalone tarball (ebpf-beta/binary) from each RPM, and checks that the
+#          drop-in template is root-owned and outside the chowned dirs (ci/check-package.sh)
 #   image  official-layout image (ebpf-beta/image/Dockerfile): builds linux/amd64 into the
 #          local docker and smoke-tests it; IMAGE_PUSH=1 then pushes linux/amd64+arm64
 #
@@ -81,6 +83,8 @@ if want rpm; then : > "$LOGS/rpm.log"; RESULT[rpm]=PASS
       echo \"$a: \$v \$(du -h \"\$f\" | cut -f1), has etc/ebpf/obi.yaml + systemd-dropin.conf\""
     # Standalone ("binary") tarball: the same payload + install.sh (ebpf-beta/binary).
     run rpm ebpf-beta/binary/build-tarball.sh "$BS/bin/linux/$a/amazon-cloudwatch-agent.rpm" "$BS/bin/linux/$a/amazon-cloudwatch-agent.tar.gz"
+    # Threat model E3: the drop-in template stays root-owned and outside the chowned dirs.
+    run rpm ebpf-beta/ci/check-package.sh "$BS/bin/linux/$a/amazon-cloudwatch-agent.rpm" "$BS/bin/linux/$a/amazon-cloudwatch-agent.tar.gz"
   done
 fi
 

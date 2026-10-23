@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Tiny two-tier HTTP/1.1 test app for the OBI e2e test.
 
-  app.py backend  <port>                 -> 200 "ok"
+  app.py backend  <port>                 -> 200 "ok" (+ $E2E_SECRET, for the no-leak check)
   app.py frontend <port> <backend_url>   -> calls backend, returns 200/502
 
 Each role runs under its own executable name (argv[0] is a copied
 interpreter, see run-e2e.sh) so OBI discovery can tell them apart.
 """
+import os
 import sys
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -16,7 +17,7 @@ class Backend(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def do_GET(self):
-        body = b"ok\n"
+        body = ("ok " + os.environ.get("E2E_SECRET", "") + "\n").encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()

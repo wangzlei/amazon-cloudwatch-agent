@@ -4,7 +4,7 @@
 # an explicit capability set and to mount a cgroup2 hierarchy on cgroup-v1 hosts).
 #
 # usage: run-e2e.sh <agent-binary> <scenario> <outdir>
-#   scenario tcp     : context_propagation=tcp_service_name, caps = the shipped 8-cap set incl. CAP_NET_ADMIN
+#   scenario tcp     : context_propagation=tcp_service_name, caps = the 8 eBPF caps of the shipped set incl. CAP_NET_ADMIN
 #                      and CAP_SYS_ADMIN (SYS_ADMIN is for the FIONREAD compensation that
 #                      kernels 6.6.128+/6.12.75+/6.18.14+/6.19+ need; without it OBI disables
 #                      context propagation there and the peer.service.name check fails)
@@ -47,7 +47,11 @@ if [[ $CP != disabled && ${SKIP_CGROUP2_MOUNT:-0} != 1 ]] && [[ $(stat -fc %T /s
     && echo "mounted cgroup2 at /sys/fs/cgroup/unified" | tee "$OUT/cgroup2-mounted-by-e2e"
 fi
 
-python3 "$HERE/app.py" backend "$BACKEND_PORT" & PIDS+=($!)
+# No-leak check: a random secret goes into the query string, request headers and the
+# backend's response body; it must not appear anywhere in the agent's output
+# (exported metrics and spans, and its logs).
+SECRET="e2esecret$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+E2E_SECRET=$SECRET python3 "$HERE/app.py" backend "$BACKEND_PORT" & PIDS+=($!)
 python3 "$HERE/app.py" frontend "$FRONTEND_PORT" "http://127.0.0.1:$BACKEND_PORT" & PIDS+=($!)
 sleep 1
 
@@ -80,7 +84,8 @@ done
 sleep 5
 echo "### traffic: $REQS requests to frontend (-> backend)"
 ok=0; for i in $(seq 1 "$REQS"); do
-  c=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$FRONTEND_PORT/item/$((i % 5))") && [[ $c == 200 ]] && ok=$((ok+1))
+  c=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $SECRET" -H "X-E2E-Secret: $SECRET" \
+    "http://127.0.0.1:$FRONTEND_PORT/item/$((i % 5))?token=$SECRET") && [[ $c == 200 ]] && ok=$((ok+1))
   sleep 0.02
 done
 echo "curl 200s: $ok/$REQS" | tee "$OUT/traffic.txt"
@@ -88,4 +93,8 @@ echo "### waiting for metric export"; sleep 20
 kill -0 "$APID" 2>/dev/null && echo "agent still running (pid $APID)" || { echo "FAIL: agent died"; tail -50 "$OUT/agent/agent.log"; exit 1; }
 grep -iE 'error|warn' "$OUT/agent/agent.log" | grep -viE 'level=info' | head -40 > "$OUT/agent/agent-warn-errors.txt"
 python3 "$HERE/verify.py" "$OUT/agent/agent.log" $EXPECT_PEER | tee "$OUT/verify.txt"
-exit "${PIPESTATUS[0]}"
+rc=${PIPESTATUS[0]}
+leaks=$(grep -c "$SECRET" "$OUT/agent/agent.log")
+if [[ $leaks -ne 0 ]]; then echo "FAIL: captured request/response data in agent output ($leaks lines)" | tee -a "$OUT/verify.txt"; rc=1
+else echo "no-leak: secret from query string, headers and response body not in agent output" | tee -a "$OUT/verify.txt"; fi
+exit "$rc"
