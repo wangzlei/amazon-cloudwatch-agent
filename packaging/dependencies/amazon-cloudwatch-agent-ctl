@@ -26,7 +26,8 @@ readonly ENV_CONFIG="${CONFDIR}/env-config.json"
 # runs the agent as cwagent with the capabilities the eBPF receiver needs.
 readonly EBPF_DIR="${CONFDIR}/ebpf"
 readonly EBPF_MARKER="${EBPF_DIR}/enabled"
-readonly EBPF_DROPIN_TEMPLATE="${EBPF_DIR}/systemd-dropin.conf"
+# The template is in share/ (root-owned), not etc/ (chowned to cwagent at start).
+readonly EBPF_DROPIN_TEMPLATE="${AGENTDIR}/share/ebpf/systemd-dropin.conf"
 readonly EBPF_DROPIN_DIR="/etc/systemd/system/amazon-cloudwatch-agent.service.d"
 readonly EBPF_DROPIN="${EBPF_DROPIN_DIR}/ebpf.conf"
 

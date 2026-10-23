@@ -76,7 +76,7 @@ if want rpm; then : > "$LOGS/rpm.log"; RESULT[rpm]=PASS
   run rpm bash -c "rm -rf '$BS/private' && mkdir -p '$BS/bin' && make package-rpm BUILD_SPACE='$BS' VERSION='$VERSION' EBPF_OCI_BIN='${EBPF_OCI_BIN:-docker}'"
   for a in amd64 arm64; do
     run rpm bash -c "f='$BS/bin/linux/$a/amazon-cloudwatch-agent.rpm'; v=\$(rpm -qp --qf '%{VERSION}' \"\$f\"); [ \"\$v\" = '$RPM_VERSION' ] || { echo \"\$f: version \$v, expected $RPM_VERSION\"; exit 1; }
-      l=\$(rpm2cpio \"\$f\" | cpio -t --quiet); for p in etc/ebpf/obi.yaml etc/ebpf/systemd-dropin.conf; do grep -q \"/opt/aws/amazon-cloudwatch-agent/\$p\\\$\" <<<\"\$l\" || { echo \"\$f: \$p missing\"; exit 1; }; done
+      l=\$(rpm2cpio \"\$f\" | cpio -t --quiet); for p in etc/ebpf/obi.yaml share/ebpf/systemd-dropin.conf; do grep -q \"/opt/aws/amazon-cloudwatch-agent/\$p\\\$\" <<<\"\$l\" || { echo \"\$f: \$p missing\"; exit 1; }; done
       echo \"$a: \$v \$(du -h \"\$f\" | cut -f1), has etc/ebpf/obi.yaml + systemd-dropin.conf\""
   done
 fi
