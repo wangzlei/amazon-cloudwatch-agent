@@ -65,6 +65,19 @@ func TestRPMDefaultEBPFConfigExportsMetricsOnly(t *testing.T) {
 	}
 }
 
+// Defaults chosen from the EC2 performance tests (perf-ec2, 2026-10-22/23): BPF maps at half
+// size (agent memory ~330 MB -> ~170 MB, RED exact up to ~4k requests in flight) and no
+// Node.js injector (RED does not need it; it cost +340 us CPU per request).
+func TestRPMDefaultEBPFConfigPerformanceDefaults(t *testing.T) {
+	setCreds(t)
+	r, err := confmap.NewResolver(configprovider.GetSettings([]string{rpmConfig}, zap.NewNop()).ResolverSettings)
+	require.NoError(t, err)
+	conf, err := r.Resolve(context.Background())
+	require.NoError(t, err)
+	assert.EqualValues(t, -1, conf.Get("receivers::obi/cwagent_ebpf::ebpf::maps_config::global_scale_factor"))
+	assert.Equal(t, false, conf.Get("receivers::obi/cwagent_ebpf::nodejs::enabled"))
+}
+
 // The exporters and sigv4auth use CWAGENT_REGION (the region the agent resolved, written to
 // env-config.json by the translation), else us-west-2. AWS_REGION alone does not change it:
 // the translation folds it into CWAGENT_REGION when it is the agent's region.

@@ -94,6 +94,13 @@ receivers:
         enable: "autodetect"
     metrics:
       features: "application"
+    # No Node.js injector (SIGUSR1 + inspector + injected JS): RED does not need it,
+    # the socket / libssl probes count every request without it. On a node binary it
+    # cost +340 us CPU per request and cut max throughput from 42k to 2.8k RPS on
+    # c6i.2xlarge; disabled: +14 us, 25k RPS, RED exact (perf-ec2, 2026-10-23).
+    # Turning traces on with exports: "metrics,traces" does not need it either.
+    nodejs:
+      enabled: false
 
 extensions:
   sigv4auth/cwagent_ebpf_xray:
