@@ -10,12 +10,15 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strings"
 
 	"github.com/aws/amazon-cloudwatch-agent/cfg/commonconfig"
+	"github.com/aws/amazon-cloudwatch-agent/cfg/envconfig"
 	userutil "github.com/aws/amazon-cloudwatch-agent/internal/util/user"
 	"github.com/aws/amazon-cloudwatch-agent/translator"
 	"github.com/aws/amazon-cloudwatch-agent/translator/cmdutil"
 	"github.com/aws/amazon-cloudwatch-agent/translator/context"
+	"github.com/aws/amazon-cloudwatch-agent/translator/translate/agent"
 	"github.com/aws/amazon-cloudwatch-agent/translator/translate/otel/pipeline"
 	translatorUtil "github.com/aws/amazon-cloudwatch-agent/translator/util"
 )
@@ -88,6 +91,22 @@ func NewConfigTranslator(inputOs, inputJSONFile, inputJSONDir, inputTOMLFile, in
 	return &ct, nil
 }
 
+// resolvedRegion is the region this translation resolved (agent.region, then the credentials
+// profile / AWS_REGION, then EC2 or ECS metadata). A YAML-only config skips the JSON region
+// rule, so the same detection runs here directly. Without one (modes that defer to
+// ${AWS_REGION} at runtime) it is the AWS_REGION environment variable, as for the agent; ""
+// if that is unset too.
+func (ct *ConfigTranslator) resolvedRegion() string {
+	region := agent.Global_Config.Region
+	if region == "" {
+		region, _ = translatorUtil.DetectRegion(ct.ctx.Mode(), ct.ctx.Credentials())
+	}
+	if region == "" || strings.Contains(region, "${") {
+		region = os.Getenv("AWS_REGION")
+	}
+	return region
+}
+
 func (ct *ConfigTranslator) Translate() (err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -155,6 +174,15 @@ func (ct *ConfigTranslator) Translate() (err error) {
 
 	envConfigPath := filepath.Join(tomlConfigDir, envConfigFileName)
 	cmdutil.TranslateJSONMapToEnvConfigFile(mergedJSONConfigMap, envConfigPath)
+	// The region the agent resolved, for the eBPF default config (etc/ebpf/obi.yaml); a
+	// stale value is removed when there is none.
+	region := map[string]string{}
+	if r := ct.resolvedRegion(); r != "" {
+		region[envconfig.CWAGENT_REGION] = r
+	}
+	if err = envconfig.MergeFile(envConfigPath, region, envconfig.CWAGENT_REGION); err != nil {
+		return fmt.Errorf("failed to write %s to %s: %v", envconfig.CWAGENT_REGION, envConfigPath, err)
+	}
 
 	return nil
 }

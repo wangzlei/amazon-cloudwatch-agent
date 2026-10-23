@@ -31,6 +31,8 @@ func startAgent(writer io.WriteCloser) error {
 			"-config", paths.TomlConfigPath,
 			"-envconfig", paths.EnvConfigPath,
 		}
+		// eBPF default config (etc/ebpf/obi.yaml) when opted in, as on the host below.
+		execArgs = append(execArgs, ebpfConfigArgs()...)
 		execArgs = append(execArgs, config.GetOTELConfigArgs(paths.CONFIG_DIR_IN_CONTAINER)...)
 		execArgs = append(execArgs, "-pidfile", paths.AgentDir+"/var/amazon-cloudwatch-agent.pid")
 		if err := syscall.Exec(paths.AgentBinaryPath, execArgs, os.Environ()); err != nil {
