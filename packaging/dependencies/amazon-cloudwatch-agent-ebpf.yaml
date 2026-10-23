@@ -168,8 +168,6 @@ processors:
     send_batch_max_size: 500
 
 exporters:
-  debug/cwagent_ebpf:
-    verbosity: basic
   # otlp_http compresses with gzip by default.
   otlp_http/cwagent_ebpf_xray:
     traces_endpoint: https://xray.${env:CWAGENT_REGION:-us-west-2}.amazonaws.com/v1/traces
@@ -186,8 +184,8 @@ service:
     traces/cwagent_ebpf:
       receivers: [obi/cwagent_ebpf]
       processors: [transform/cwagent_ebpf_aws, batch/cwagent_ebpf]
-      exporters: [otlp_http/cwagent_ebpf_xray, debug/cwagent_ebpf]
+      exporters: [otlp_http/cwagent_ebpf_xray]
     metrics/cwagent_ebpf:
       receivers: [obi/cwagent_ebpf]
       processors: [transform/cwagent_ebpf_aws, cumulativetodelta/cwagent_ebpf, batch/cwagent_ebpf]
-      exporters: [otlp_http/cwagent_ebpf_cloudwatch, debug/cwagent_ebpf]
+      exporters: [otlp_http/cwagent_ebpf_cloudwatch]
