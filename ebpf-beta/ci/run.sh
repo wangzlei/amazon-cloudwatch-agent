@@ -12,7 +12,8 @@
 #   e2e    runs the agent with the shipped capability set (scenario tcp) and without
 #          CAP_NET_ADMIN/CAP_SYS_ADMIN (scenario nonetadmin); asserts RED metrics, spans
 #          and peer.service.name from the debug exporter output
-#   rpm    make package-rpm (amd64 + arm64), checks the version and the etc/ebpf payload
+#   rpm    make package-rpm (amd64 + arm64), checks the version and the etc/ebpf payload,
+#          and builds the standalone tarball (ebpf-beta/binary) from each RPM
 #   image  official-layout image (ebpf-beta/image/Dockerfile): builds linux/amd64 into the
 #          local docker and smoke-tests it; IMAGE_PUSH=1 then pushes linux/amd64+arm64
 #
@@ -78,6 +79,8 @@ if want rpm; then : > "$LOGS/rpm.log"; RESULT[rpm]=PASS
     run rpm bash -c "f='$BS/bin/linux/$a/amazon-cloudwatch-agent.rpm'; v=\$(rpm -qp --qf '%{VERSION}' \"\$f\"); [ \"\$v\" = '$RPM_VERSION' ] || { echo \"\$f: version \$v, expected $RPM_VERSION\"; exit 1; }
       l=\$(rpm2cpio \"\$f\" | cpio -t --quiet); for p in etc/ebpf/obi.yaml share/ebpf/systemd-dropin.conf; do grep -q \"/opt/aws/amazon-cloudwatch-agent/\$p\\\$\" <<<\"\$l\" || { echo \"\$f: \$p missing\"; exit 1; }; done
       echo \"$a: \$v \$(du -h \"\$f\" | cut -f1), has etc/ebpf/obi.yaml + systemd-dropin.conf\""
+    # Standalone ("binary") tarball: the same payload + install.sh (ebpf-beta/binary).
+    run rpm ebpf-beta/binary/build-tarball.sh "$BS/bin/linux/$a/amazon-cloudwatch-agent.rpm" "$BS/bin/linux/$a/amazon-cloudwatch-agent.tar.gz"
   done
 fi
 

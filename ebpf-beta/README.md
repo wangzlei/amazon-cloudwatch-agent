@@ -10,6 +10,7 @@ this branch alone:
 | `packaging/dependencies/amazon-cloudwatch-agent-ebpf.{yaml,conf}` | RPM default eBPF config (`etc/ebpf/obi.yaml`) and systemd drop-in |
 | `ebpf-beta/ci/` | `run.sh` (all checks), dependency-version gate and its v1.300074.0 baselines |
 | `ebpf-beta/e2e/` | runtime test with restricted capabilities |
+| `ebpf-beta/binary/` | standalone tarball: the RPM's files + `install.sh` / `uninstall.sh` (no rpm needed) |
 | `ebpf-beta/image/Dockerfile` | official CloudWatch Agent image layout + `etc/ebpf/obi.yaml` |
 | `ebpf-beta/configtest/` | the RPM eBPF config must validate with the agent's components |
 | `.github/workflows/ebpf-beta.yml` | CI: gates, e2e, RPM; manual release |
@@ -24,9 +25,24 @@ them in OBI's pinned generator image, and the Linux build targets run it first.
 
 ```
 ebpf-beta/ci/run.sh              # gates (= deps unit cross) + e2e (e2e needs sudo)
-ebpf-beta/ci/run.sh rpm          # RPMs in build/ebpf-beta/bin/linux/{amd64,arm64}/
+ebpf-beta/ci/run.sh rpm          # RPMs + tarballs in build/ebpf-beta/bin/linux/{amd64,arm64}/
 VERSION=1.300074.0-ebpfbeta.1 ebpf-beta/ci/run.sh rpm
 ```
+
+## Standalone tarball
+
+`amazon-cloudwatch-agent.tar.gz` (built from each RPM by `ebpf-beta/binary/build-tarball.sh`)
+installs the same files, `cwagent` user and systemd units without rpm:
+
+```
+tar -xzf amazon-cloudwatch-agent-<version>.linux-amd64.tar.gz && cd amazon-cloudwatch-agent-ebpf-beta
+sudo ./install.sh                                   # install or upgrade; keeps edited configs
+sudo amazon-cloudwatch-agent-ctl -a enable-ebpf     # eBPF on: cwagent + the capabilities via systemd
+sudo ./uninstall.sh
+```
+
+The capabilities come only from the systemd drop-in, as with the RPM. Do not grant them with
+`setcap` (every user who can run the file would get them) or run the agent as root.
 
 ## Image
 

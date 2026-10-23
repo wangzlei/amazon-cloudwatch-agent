@@ -102,13 +102,15 @@ jobs:
         run: |
           command -v rpmbuild || sudo apt-get install -y rpm
           ebpf-beta/ci/run.sh rpm
-      - name: Collect RPMs
+      - name: Collect RPMs and tarballs
         env: { VERSION: "${{ steps.v.outputs.version }}" }
         run: |
           mkdir -p dist
           cp build/ebpf-beta/bin/linux/amd64/amazon-cloudwatch-agent.rpm "dist/amazon-cloudwatch-agent-$VERSION.x86_64.rpm"
           cp build/ebpf-beta/bin/linux/arm64/amazon-cloudwatch-agent.rpm "dist/amazon-cloudwatch-agent-$VERSION.aarch64.rpm"
-          (cd dist && sha256sum *.rpm | tee SHA256SUMS)
+          cp build/ebpf-beta/bin/linux/amd64/amazon-cloudwatch-agent.tar.gz "dist/amazon-cloudwatch-agent-$VERSION.linux-amd64.tar.gz"
+          cp build/ebpf-beta/bin/linux/arm64/amazon-cloudwatch-agent.tar.gz "dist/amazon-cloudwatch-agent-$VERSION.linux-arm64.tar.gz"
+          (cd dist && sha256sum *.rpm *.tar.gz | tee SHA256SUMS)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: rpm-${{ steps.v.outputs.version }}
