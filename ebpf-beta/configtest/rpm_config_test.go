@@ -76,6 +76,8 @@ func TestRPMDefaultEBPFConfigPerformanceDefaults(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, -1, conf.Get("receivers::obi/cwagent_ebpf::ebpf::maps_config::global_scale_factor"))
 	assert.Equal(t, false, conf.Get("receivers::obi/cwagent_ebpf::nodejs::enabled"))
+	// SDK-instrumented processes keep their eBPF RED (upstream default true drops them).
+	assert.Equal(t, false, conf.Get("receivers::obi/cwagent_ebpf::discovery::exclude_otel_instrumented_services"))
 }
 
 // The exporters and sigv4auth use CWAGENT_REGION (the region the agent resolved, written to
