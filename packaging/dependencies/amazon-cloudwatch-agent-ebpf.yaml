@@ -9,21 +9,24 @@
 # A YAML in etc/amazon-cloudwatch-agent.d/ CANNOT override the components defined
 # here: the agent refuses to merge duplicate keys under receivers, processors,
 # exporters, extensions and service::pipelines, and fails to start with
-#   E! Error running agent: failed to merge OTEL configs: merge conflict in receivers: [obi]
-# Such a YAML may only add components with different names.
+#   E! Error running agent: failed to merge OTEL configs: merge conflict in receivers: [obi/cwagent_ebpf]
+# Such a YAML may only add components with different names. Every component and
+# pipeline here is named <type>/cwagent_ebpf... so that other YAMLs do not collide.
 # To turn eBPF on / off:
 #   amazon-cloudwatch-agent-ctl -a enable-ebpf
 #   amazon-cloudwatch-agent-ctl -a disable-ebpf
 # Source: adot-obi config/otel.yaml.
 #
-#   AWS_REGION      X-Ray / CloudWatch region          (default us-west-2)
+#   CWAGENT_REGION  CloudWatch (and, if enabled, X-Ray) region (default us-west-2). Set by the agent's config
+#                   translation (env-config.json) to the region the agent resolved for itself:
+#                   agent.region, credentials profile / AWS_REGION, EC2 / ECS metadata, else the
+#                   AWS_REGION environment variable. eBPF data goes to the agent's region.
 #   AWS_VPC_ID, AWS_SUBNET_ID  optional resource attributes (skipped when unset)
 #
 # Never use a double dollar sign in this file: cwagent expands it a second time
 # and fails on the result.
 receivers:
-  obi:
-    log_level: INFO
+  obi/cwagent_ebpf:
     ebpf:
       bpf_fs_base_dir: /sys/fs/bpf
       # Servers return their service.name to the client in a TCP option (kind 26,
@@ -60,10 +63,16 @@ receivers:
         # OBI matches every local inet port of a process, not only listeners, so keep
         # ranges below the ephemeral range (32768-60999). Not an env var: a
         # single-port value would be typed as an int and rejected by OBI.
+        # exports: "metrics" = RED metrics only, no spans (traces are off by default).
+        # For traces too: exports: "metrics,traces" on these entries, plus the
+        # X-Ray exporter, sigv4auth extension and traces pipeline (see the end of this file).
         - open_ports: "80,443,3000,5000,8000-8099,8443,8888,9000"
+          exports: "metrics"
         # EKS: every Deployment / StatefulSet pod, whatever its ports.
         - k8s_deployment_name: "*"
+          exports: "metrics"
         - k8s_statefulset_name: "*"
+          exports: "metrics"
       # Added to OBI's built-in excludes (obi / otelcol* executables and the
       # kube-system, kube-node-lease, cert-manager, monitoring, ... namespaces).
       exclude_instrument:
@@ -87,18 +96,15 @@ receivers:
       features: "application"
 
 extensions:
-  sigv4auth/xray:
-    region: ${env:AWS_REGION:-us-west-2}
-    service: xray
-  sigv4auth/monitoring:
-    region: ${env:AWS_REGION:-us-west-2}
+  sigv4auth/cwagent_ebpf_monitoring:
+    region: ${env:CWAGENT_REGION:-us-west-2}
     service: monitoring
 
 processors:
   # AWS-flavored resource attributes. OBI's EC2 detection gives host.id / cloud.*.
   # host.ip is derived only from an ip-a-b-c-d EC2 hostname (not from a pod name);
   # VPC / subnet come in as AWS_VPC_ID / AWS_SUBNET_ID env and are skipped when unset.
-  transform/aws:
+  transform/cwagent_ebpf_aws:
     error_mode: ignore
     trace_statements:
       - context: resource
@@ -141,39 +147,36 @@ processors:
           - replace_pattern(attributes["aws.lambda.function.arn"], "^arn:aws:lambda:cn-", "arn:aws-cn:lambda:cn-") where attributes["aws.lambda.function.arn"] != nil
           - replace_pattern(attributes["aws.lambda.function.arn"], "^arn:aws:lambda:us-gov-", "arn:aws-us-gov:lambda:us-gov-") where attributes["aws.lambda.function.arn"] != nil
   # CloudWatch OTLP metrics require delta temporality; OBI emits cumulative.
-  cumulativetodelta: {}
+  cumulativetodelta/cwagent_ebpf: {}
   # CloudWatch OTLP accepts at most 1000 datapoints per request.
-  batch:
+  batch/cwagent_ebpf:
     timeout: 5s
     send_batch_size: 500
     send_batch_max_size: 500
 
 exporters:
-  debug:
+  debug/cwagent_ebpf:
     verbosity: basic
   # otlp_http compresses with gzip by default.
-  otlp_http/xray:
-    traces_endpoint: https://xray.${env:AWS_REGION:-us-west-2}.amazonaws.com/v1/traces
+  otlp_http/cwagent_ebpf_cloudwatch:
+    metrics_endpoint: https://monitoring.${env:CWAGENT_REGION:-us-west-2}.amazonaws.com/v1/metrics
     auth:
-      authenticator: sigv4auth/xray
-  otlp_http/cloudwatch:
-    metrics_endpoint: https://monitoring.${env:AWS_REGION:-us-west-2}.amazonaws.com/v1/metrics
-    auth:
-      authenticator: sigv4auth/monitoring
+      authenticator: sigv4auth/cwagent_ebpf_monitoring
 
 service:
-  extensions: [sigv4auth/xray, sigv4auth/monitoring]
-  telemetry:
-    logs:
-      level: info
-    metrics:
-      level: none
+  extensions: [sigv4auth/cwagent_ebpf_monitoring]
   pipelines:
-    traces:
-      receivers: [obi]
-      processors: [transform/aws, batch]
-      exporters: [otlp_http/xray, debug]
-    metrics:
-      receivers: [obi]
-      processors: [transform/aws, cumulativetodelta, batch]
-      exporters: [otlp_http/cloudwatch, debug]
+    metrics/cwagent_ebpf:
+      receivers: [obi/cwagent_ebpf]
+      processors: [transform/cwagent_ebpf_aws, cumulativetodelta/cwagent_ebpf, batch/cwagent_ebpf]
+      exporters: [otlp_http/cwagent_ebpf_cloudwatch, debug/cwagent_ebpf]
+# Traces (off by default). To send spans to X-Ray, add:
+#   extensions:  sigv4auth/cwagent_ebpf_xray: {region: <same as above>, service: xray}
+#                and list it in service::extensions
+#   exporters:   otlp_http/cwagent_ebpf_xray:
+#                  traces_endpoint: https://xray.<region>.amazonaws.com/v1/traces
+#                  auth: {authenticator: sigv4auth/cwagent_ebpf_xray}
+#   pipelines:   traces/cwagent_ebpf: {receivers: [obi/cwagent_ebpf],
+#                  processors: [transform/cwagent_ebpf_aws, batch/cwagent_ebpf],
+#                  exporters: [otlp_http/cwagent_ebpf_xray]}
+#   and exports: "metrics,traces" on the discovery instrument entries.
