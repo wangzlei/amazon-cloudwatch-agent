@@ -15,10 +15,11 @@ import (
 //   - ebpf.context_propagation: "tcp_service_name". Servers return their service
 //     name in a TCP option (-> peer.service.name on the client), only to peers
 //     inside the VPC; no trace context is sent. "headers"/"all" are not the
-//     default because Go library-level header injection uses
-//     bpf_probe_write_user, which needs CAP_SYS_ADMIN, and because rewriting HTTP
-//     payloads is more intrusive than a TCP option. Requires CAP_NET_ADMIN; set
-//     "disabled" to run without it.
+//     default because they rewrite the application's HTTP payload, which is more
+//     intrusive than a TCP option. Requires CAP_NET_ADMIN, and CAP_SYS_ADMIN on
+//     kernels with commit 929e30f93125 (6.6.128+, 6.12.75+, 6.18.14+, 6.19+; the
+//     FIONREAD compensation program); without them propagation is disabled and
+//     RED still works.
 //   - network flow metrics (network.enable) off: they are a separate,
 //     high-cardinality feature that CloudWatch customers opt into explicitly.
 //   - enforce_sys_caps false: missing capabilities are logged, and individual

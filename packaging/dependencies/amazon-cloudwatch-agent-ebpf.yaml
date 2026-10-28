@@ -15,9 +15,8 @@
 # To turn eBPF on / off:
 #   amazon-cloudwatch-agent-ctl -a enable-ebpf
 #   amazon-cloudwatch-agent-ctl -a disable-ebpf
-# Source: adot-obi config/otel.yaml.
 #
-#   CWAGENT_REGION  X-Ray / CloudWatch region (default us-west-2). Set by the agent's config
+#   CWAGENT_REGION  CloudWatch region (default us-west-2). Set by the agent's config
 #                   translation (env-config.json) to the region the agent resolved for itself:
 #                   agent.region, credentials profile / AWS_REGION, EC2 / ECS metadata, else the
 #                   AWS_REGION environment variable. eBPF data goes to the agent's region.
@@ -38,7 +37,10 @@ receivers:
       # true submits it at the first response write, which dropped ~31% of
       # requests whose downstream calls were slow or timed out (ping demo, 2026-10-09).
       high_request_volume: false
-      # AWS SDK spans: the upstream S3/SQS parsers need the large HTTP buffer.
+      # AWS SDK calls: the upstream S3 / SQS / Lambda parsers (they need the large HTTP
+      # buffer) add aws.s3.bucket, aws.sqs.queue.url, faas.invoked_name / _region and
+      # aws.lambda.function.arn to HTTP client RED metrics; the Lambda transform below
+      # uses them.
       buffer_sizes:
         http: 8192
       payload_extraction:
