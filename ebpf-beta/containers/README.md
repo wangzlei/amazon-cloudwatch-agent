@@ -82,11 +82,11 @@ takes longer than the 10 s default.
 
 ## Known limitations
 
-- **EKS: no `peer.service.name` for calls through a Service.** The client socket's peer is the
-  ClusterIP (e.g. 10.100.0.0/16), which is not in the VPC CIDRs, so the default VPC-only
-  `tcp_service_name` never sends the option. `tcp_service_name_outside_vpc: true` in
-  `privileged.yaml` makes it work, but then the option goes to every peer, also outside the VPC.
-  Fix needed in OBI: also allow the cluster's Service CIDR.
+- On Kubernetes, `tcp_service_name` is also exchanged with the cluster's Service addresses
+  (a client connected to a Service sees the ClusterIP, which is usually outside the VPC): the
+  `ServiceCIDR` objects (Kubernetes 1.33+), else each Service's ClusterIPs. This needs the
+  `servicecidrs` / `services` read access in the DaemonSet's ClusterRole. Pod IPs outside the
+  VPC (overlay CNIs) are not added.
 - **ECS: `aws.ecs.task.arn` is the regular agent's task**, not the application's: the agent's
   `opentelemetry` pipeline runs resource detection with `override: true`. Cluster, host and
   `service.name` are correct; per-task attribution needs ECS metadata in the privileged container.

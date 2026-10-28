@@ -27,6 +27,10 @@ rules:
   - apiGroups: [batch]
     resources: [jobs, cronjobs]
     verbs: [get, list, watch]
+  # Service address ranges: tcp_service_name is exchanged with Kubernetes Services.
+  - apiGroups: [networking.k8s.io]
+    resources: [servicecidrs]
+    verbs: [get, list, watch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
