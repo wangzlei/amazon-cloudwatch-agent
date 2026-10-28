@@ -51,7 +51,9 @@ CI pushes linux/amd64 + linux/arm64 to `ghcr.io/<owner>/cloudwatch-agent-ebpf-be
 `latest` (branch `ebpf-beta`) and `<release>`. Same layout and entrypoint as the official
 `amazon/cloudwatch-agent` image, so it can replace it (EKS add-on / operator). eBPF is off, as in
 the RPM, until `/opt/aws/amazon-cloudwatch-agent/etc/ebpf/enabled` exists (mount an empty file);
-the container then needs the eBPF capabilities (or `privileged`) and host PID.
+the container then needs the eBPF capabilities (or `privileged`), host PID and the host's
+`/sys/fs/cgroup` mounted at `/sys/fs/cgroup` (in the container's own cgroup namespace OBI
+would attach its sockops program to the container's cgroup only: RED works, `peer.service.name` does not).
 
 ## Release
 
