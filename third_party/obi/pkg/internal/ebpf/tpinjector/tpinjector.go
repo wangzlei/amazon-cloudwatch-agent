@@ -206,6 +206,9 @@ func (p *Tracer) LoadSpecs() ([]*ebpfcommon.SpecBundle, error) {
 	if err != nil {
 		return nil, err
 	}
+	if m, ok := spec.Maps["svc_name_peer_cidrs"]; ok {
+		m.MaxEntries = svcNamePeerCIDRsMaxEntries
+	}
 
 	bundles := []*ebpfcommon.SpecBundle{{
 		Spec:      spec,
@@ -289,15 +292,24 @@ func (p *Tracer) SetupTailCalls() {
 
 	cidrs, source := svcNamePeerCIDRs(context.Background())
 	for _, c := range cidrs {
-		key := BpfSvcNamePeerCidrKeyT{Prefixlen: uint32(c.Bits()), Addr: c.Addr().As16()}
-		if c.Addr().Is4() {
-			key.Prefixlen += ipv4MappedPrefixBits
-		}
+		key := svcNamePeerKey(c)
 		if err := p.bpfObjects.SvcNamePeerCidrs.Update(&key, uint8(1), ebpf.UpdateAny); err != nil {
 			p.log.Warn("cannot allow tcp_service_name peers", "cidr", c, "error", err)
 		}
 	}
 	p.log.Info("tcp_service_name is only exchanged with peers in", "cidrs", cidrs, "source", source)
+
+	if client := kubeClient(p.cfg); client != nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		p.AddCloser(stopFunc(cancel))
+		synced := make(chan struct{})
+		go newKubePeerCIDRs(p.log, p.bpfObjects.SvcNamePeerCidrs, cidrs).watch(ctx, client, synced)
+		select {
+		case <-synced:
+		case <-time.After(kubePeerSyncTimeout):
+			p.log.Warn("Kubernetes Service addresses not listed yet; tcp_service_name to Services starts when they are")
+		}
+	}
 }
 
 func (p *Tracer) RegisterOffsets(_ *exec.FileInfo, _ *goexec.Offsets) {}
