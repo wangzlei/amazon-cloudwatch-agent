@@ -86,10 +86,6 @@ receivers:
         # EKS add-ons.
         - k8s_pod_labels:
             eks.amazonaws.com/component: "*"
-        # Per-pod opt-out. PLACEHOLDER key: align with the CloudWatch Agent's
-        # annotation convention before shipping.
-        - k8s_pod_annotations:
-            cloudwatch.aws/ebpf-instrument: "false"
     attributes:
       kubernetes:
         # On in EKS, off on plain EC2 ("true" would fail without a cluster).
