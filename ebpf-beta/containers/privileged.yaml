@@ -129,6 +129,11 @@ exporters:
     endpoint: ${env:CWAGENT_OTLP_ENDPOINT}
 
 service:
+  # No internal-telemetry endpoint (localhost:8888): this process only feeds the regular
+  # agent, which binds that port itself when it runs OTel YAML on the same host network.
+  telemetry:
+    metrics:
+      level: none
   pipelines:
     metrics/cwagent_ebpf:
       receivers: [obi/cwagent_ebpf]

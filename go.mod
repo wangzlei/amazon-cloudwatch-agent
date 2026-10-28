@@ -234,6 +234,7 @@ require (
 	go.opentelemetry.io/collector/exporter/exporterhelper v0.150.0
 	go.opentelemetry.io/collector/exporter/exportertest v0.150.0
 	go.opentelemetry.io/collector/exporter/nopexporter v0.150.0
+	go.opentelemetry.io/collector/exporter/otlpexporter v0.150.0
 	go.opentelemetry.io/collector/exporter/otlphttpexporter v0.150.0
 	go.opentelemetry.io/collector/extension v1.56.0
 	go.opentelemetry.io/collector/extension/extensionauth v1.56.0
@@ -734,7 +735,6 @@ require (
 	github.com/xwb1989/sqlparser v0.0.0-20180606152119-120387863bf2 // indirect
 	github.com/yl2chen/cidranger v1.0.2 // indirect
 	go.mongodb.org/mongo-driver/v2 v2.6.0 // indirect
-	go.opentelemetry.io/collector/exporter/otlpexporter v0.150.0 // indirect
 	go.opentelemetry.io/contrib/detectors/aws/ec2/v2 v2.5.1 // indirect
 	go.opentelemetry.io/contrib/detectors/aws/eks v1.43.0 // indirect
 	go.opentelemetry.io/contrib/detectors/azure/azurevm v0.16.0 // indirect

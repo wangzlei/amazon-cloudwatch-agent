@@ -1,0 +1,139 @@
+# Privileged eBPF container, Unix socket variant: same as privileged.yaml, but the RED
+# metrics go over OTLP/gRPC to a Unix domain socket the regular (official) CloudWatch
+# Agent listens on (receiver-unix.yaml). Only processes that may write the socket can
+# send to it, unlike a loopback TCP port. Needs a directory both containers mount
+# (ECS: a host volume; EC2: the same host).
+#
+#   CWAGENT_OTLP_SOCKET  absolute path of the regular agent's OTLP/HTTP socket
+#   AWS_VPC_ID, AWS_SUBNET_ID  optional resource attributes (skipped when unset)
+
+receivers:
+  obi/cwagent_ebpf:
+    ebpf:
+      bpf_fs_base_dir: /sys/fs/bpf
+      # Servers return their service.name to the client in a TCP option (kind 26,
+      # patch 01) -> peer.service.name; also cwagent's obi receiver default. Only
+      # to peers inside the VPC unless tcp_service_name_outside_vpc: true. No trace
+      # context and no HTTP header injection: the application payload is never modified.
+      context_propagation: "tcp_service_name"
+      # false (OBI's default): a server request ends when its response is complete.
+      # true submits it at the first response write, which dropped ~31% of
+      # requests whose downstream calls were slow or timed out (ping demo, 2026-10-09).
+      high_request_volume: false
+      # AWS SDK calls: the upstream S3 / SQS / Lambda parsers (they need the large HTTP
+      # buffer) add aws.s3.bucket, aws.sqs.queue.url, faas.invoked_name / _region and
+      # aws.lambda.function.arn to HTTP client RED metrics; the Lambda transform below
+      # uses them.
+      buffer_sizes:
+        http: 8192
+      payload_extraction:
+        http:
+          aws:
+            enabled: true
+      # Halve every resizable BPF map (OBI scales sizes by 2^factor, -3..3) to
+      # save kernel memory; 0 = upstream sizes.
+      maps_config:
+        global_scale_factor: -1
+    # One filter for EC2, ECS and EKS. Within an entry all keys must match (AND);
+    # a process is picked when any instrument entry matches (OR) and no
+    # exclude_instrument entry does (exclude wins). k8s_* keys never match a process
+    # without Kubernetes metadata, so those entries are inert on EC2 / ECS.
+    discovery:
+      # A process without OTEL_SERVICE_NAME is named from its package.json /
+      # pyproject.toml / JAR / main class / script instead of python3, node,
+      # java; Kubernetes names still win. false = upstream (executable) naming.
+      service_name_from_cmdline: true
+      # false: keep eBPF RED for processes that also export OTel data with an SDK
+      # (e.g. Application Signals); upstream true drops all of their eBPF events.
+      exclude_otel_instrumented_services: false
+      instrument:
+        # EC2 / ECS: common service ports (ping: 8000; eks-auto: 8080-8083, 8443).
+        # OBI matches every local inet port of a process, not only listeners, so keep
+        # ranges below the ephemeral range (32768-60999). Not an env var: a
+        # single-port value would be typed as an int and rejected by OBI.
+        # exports: "metrics" = RED metrics only: OBI builds no spans, and this config
+        # has no traces pipeline.
+        - open_ports: "80,443,3000,5000,8000-8099,8443,8888,9000"
+          exports: "metrics"
+        # EKS: every Deployment / StatefulSet pod, whatever its ports.
+        - k8s_deployment_name: "*"
+          exports: "metrics"
+        - k8s_statefulset_name: "*"
+          exports: "metrics"
+      # Added to OBI's built-in excludes (obi / otelcol* executables and the
+      # kube-system, kube-node-lease, cert-manager, monitoring, ... namespaces).
+      exclude_instrument:
+        # Self and other agents/proxies. OBI's built-ins do not cover cwagent.
+        - exe_path: "{*/amazon-cloudwatch-agent*,*/envoy*,*otelcol*,*/aws-otel-collector*}"
+        - k8s_namespace: "{amazon-cloudwatch,amazon-guardduty,aws-observability,karpenter,kube-public}"
+        # Node agents: also stops the port rule from picking up DaemonSet pods.
+        - k8s_daemonset_name: "*"
+        # EKS add-ons.
+        - k8s_pod_labels:
+            eks.amazonaws.com/component: "*"
+    attributes:
+      kubernetes:
+        # On in EKS, off on plain EC2 ("true" would fail without a cluster).
+        enable: "autodetect"
+    metrics:
+      features: "application"
+    # No Node.js injector (SIGUSR1 + inspector + injected JS): RED does not need it,
+    # the socket / libssl probes count every request without it. On a node binary it
+    # cost +340 us CPU per request and cut max throughput from 42k to 2.8k RPS on
+    # c6i.2xlarge; disabled: +14 us, 25k RPS, RED exact (perf-ec2, 2026-10-23).
+    nodejs:
+      enabled: false
+
+processors:
+  # AWS-flavored resource attributes. OBI's EC2 detection gives host.id / cloud.*.
+  # host.ip is derived only from an ip-a-b-c-d EC2 hostname (not from a pod name);
+  # VPC / subnet come in as AWS_VPC_ID / AWS_SUBNET_ID env and are skipped when unset.
+  transform/cwagent_ebpf_aws:
+    error_mode: ignore
+    metric_statements:
+      - context: resource
+        statements:
+          - set(attributes["ec2.instance.id"], attributes["host.id"]) where attributes["host.id"] != nil
+          - set(attributes["aws.account.id"], attributes["cloud.account.id"]) where attributes["cloud.account.id"] != nil
+          - set(attributes["aws.region"], attributes["cloud.region"]) where attributes["cloud.region"] != nil
+          - set(attributes["host.ip"], attributes["host.name"]) where attributes["host.name"] != nil and IsMatch(attributes["host.name"], "^ip-[0-9]+-[0-9]+-[0-9]+-[0-9]+")
+          - replace_pattern(attributes["host.ip"], "[.].*", "") where attributes["host.ip"] != nil
+          - replace_pattern(attributes["host.ip"], "^ip-", "") where attributes["host.ip"] != nil
+          - replace_pattern(attributes["host.ip"], "-", ".") where attributes["host.ip"] != nil
+          - set(attributes["aws.vpc.id"], "${env:AWS_VPC_ID}") where "${env:AWS_VPC_ID}" != ""
+          - set(attributes["aws.subnet.id"], "${env:AWS_SUBNET_ID}") where "${env:AWS_SUBNET_ID}" != ""
+      # Lambda Invoke by bare function name: OBI cannot know the account, so complete
+      # aws.lambda.function.arn from the host's cloud.account.id (the caller's account
+      # unless it uses cross-account credentials) + faas.invoked_region / _name.
+      - context: datapoint
+        statements:
+          - set(attributes["aws.lambda.function.arn"], Concat(["arn:aws:lambda:", attributes["faas.invoked_region"], ":", resource.attributes["cloud.account.id"], ":function:", attributes["faas.invoked_name"]], "")) where attributes["aws.lambda.function.arn"] == nil and attributes["faas.invoked_name"] != nil and attributes["faas.invoked_region"] != nil and resource.attributes["cloud.account.id"] != nil
+          - replace_pattern(attributes["aws.lambda.function.arn"], "^arn:aws:lambda:cn-", "arn:aws-cn:lambda:cn-") where attributes["aws.lambda.function.arn"] != nil
+          - replace_pattern(attributes["aws.lambda.function.arn"], "^arn:aws:lambda:us-gov-", "arn:aws-us-gov:lambda:us-gov-") where attributes["aws.lambda.function.arn"] != nil
+  # CloudWatch OTLP metrics require delta temporality; OBI emits cumulative and the
+  # regular agent's opentelemetry pipeline does not convert.
+  cumulativetodelta/cwagent_ebpf: {}
+  # CloudWatch OTLP accepts at most 1000 datapoints per request.
+  batch/cwagent_ebpf:
+    timeout: 5s
+    send_batch_size: 500
+    send_batch_max_size: 500
+
+exporters:
+  # gRPC dials unix:// targets natively.
+  otlp_grpc/cwagent_ebpf_agent:
+    endpoint: unix://${env:CWAGENT_OTLP_SOCKET}
+    tls:
+      insecure: true
+
+service:
+  # No internal-telemetry endpoint (localhost:8888): this process only feeds the regular
+  # agent, which binds that port itself when it runs OTel YAML on the same host network.
+  telemetry:
+    metrics:
+      level: none
+  pipelines:
+    metrics/cwagent_ebpf:
+      receivers: [obi/cwagent_ebpf]
+      processors: [transform/cwagent_ebpf_aws, cumulativetodelta/cwagent_ebpf, batch/cwagent_ebpf]
+      exporters: [otlp_grpc/cwagent_ebpf_agent]

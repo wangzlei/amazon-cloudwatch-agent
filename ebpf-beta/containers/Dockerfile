@@ -4,13 +4,14 @@
 # Build context (a directory you create):
 #   amazon-cloudwatch-agent-amd64.tar.gz   release tarball, linux/amd64
 #   amazon-cloudwatch-agent-arm64.tar.gz   release tarball, linux/arm64 (multi-arch only)
-#   Dockerfile, privileged.yaml, agent.toml  from ebpf-beta/containers/
+#   Dockerfile, privileged.yaml, privileged-unix.yaml, agent.toml  from ebpf-beta/containers/
 #
 #   docker buildx build --platform linux/amd64,linux/arm64 \
 #     -t <account>.dkr.ecr.<region>.amazonaws.com/cloudwatch-agent-ebpf-beta:<version> --push .
 #
-# The image runs only the obi receiver pipeline of privileged.yaml and exports OTLP to
-# the regular CloudWatch Agent (official image) on the same node: see README.md.
+# The image runs only the obi receiver pipeline and exports OTLP/HTTP to the regular
+# CloudWatch Agent (official image) on the same node: privileged.yaml (loopback TCP, the
+# default command) or privileged-unix.yaml (Unix socket). See README.md.
 ARG BASE_IMAGE=public.ecr.aws/amazonlinux/amazonlinux:2023
 
 # Arch-independent unpacking: runs on the build platform, so a multi-arch build needs
@@ -28,12 +29,13 @@ RUN mkdir -p /tmp/x /out && tar -xzf /tmp/agent.tar.gz -C /tmp/x \
  && cp /tmp/x/opt/aws/amazon-cloudwatch-agent/LICENSE /tmp/x/opt/aws/amazon-cloudwatch-agent/NOTICE \
        /tmp/x/opt/aws/amazon-cloudwatch-agent/THIRD-PARTY-LICENSES /out/opt/aws/amazon-cloudwatch-agent/ \
  && chmod 1777 /out/tmp
-COPY privileged.yaml agent.toml /out/opt/aws/amazon-cloudwatch-agent/etc/ebpf/
+COPY privileged.yaml privileged-unix.yaml agent.toml /out/opt/aws/amazon-cloudwatch-agent/etc/ebpf/
 
 FROM scratch
 COPY --from=unpack /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=unpack /out/ /
 ENV RUN_IN_CONTAINER="True"
 ENTRYPOINT ["/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent", \
-  "-config", "/opt/aws/amazon-cloudwatch-agent/etc/ebpf/agent.toml", \
-  "-otelconfig", "/opt/aws/amazon-cloudwatch-agent/etc/ebpf/privileged.yaml"]
+  "-config", "/opt/aws/amazon-cloudwatch-agent/etc/ebpf/agent.toml"]
+# Unix socket: -otelconfig /opt/aws/amazon-cloudwatch-agent/etc/ebpf/privileged-unix.yaml
+CMD ["-otelconfig", "/opt/aws/amazon-cloudwatch-agent/etc/ebpf/privileged.yaml"]

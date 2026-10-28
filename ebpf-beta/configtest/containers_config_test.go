@@ -69,3 +69,41 @@ func TestPrivilegedConfigMatchesRPMConfig(t *testing.T) {
 	privPipe := priv["service"].(map[string]any)["pipelines"].(map[string]any)["metrics/cwagent_ebpf"].(map[string]any)
 	assert.Equal(t, rpmPipe["processors"], privPipe["processors"])
 }
+
+// privilegedUnixConfig sends to the regular agent's Unix socket (receiverUnixConfig).
+const (
+	privilegedUnixConfig = "../containers/privileged-unix.yaml"
+	receiverUnixConfig   = "../containers/receiver-unix.yaml"
+)
+
+func TestUnixSocketConfigsValidate(t *testing.T) {
+	setCreds(t)
+	t.Setenv("CWAGENT_OTLP_SOCKET", "/run/cwagent-ebpf/otlp.sock")
+	t.Setenv("AWS_REGION", "us-west-2")
+	for _, path := range []string{privilegedUnixConfig, receiverUnixConfig} {
+		col, err := otelcol.NewCollector(otelcol.CollectorSettings{
+			BuildInfo:              component.NewDefaultBuildInfo(),
+			Factories:              defaultcomponents.Factories,
+			ConfigProviderSettings: configprovider.GetSettings([]string{path}, zap.NewNop()),
+		})
+		require.NoError(t, err, path)
+		require.NoError(t, col.DryRun(context.Background()), path)
+	}
+}
+
+// Same receiver and processors as privileged.yaml; no extensions (no AWS credentials),
+// and the only exporter is OTLP/gRPC to the socket.
+func TestPrivilegedUnixConfigMatchesPrivilegedConfig(t *testing.T) {
+	t.Setenv("CWAGENT_OTLP_ENDPOINT", "http://127.0.0.1:4328")
+	t.Setenv("CWAGENT_OTLP_SOCKET", "/run/cwagent-ebpf/otlp.sock")
+	tcp, unix := resolve(t, privilegedConfig), resolve(t, privilegedUnixConfig)
+	assert.Equal(t, tcp["receivers"], unix["receivers"])
+	assert.Equal(t, tcp["processors"], unix["processors"])
+
+	assert.NotContains(t, unix, "extensions")
+	exporters := unix["exporters"].(map[string]any)
+	require.Len(t, exporters, 1)
+	exp := exporters["otlp_grpc/cwagent_ebpf_agent"].(map[string]any)
+	assert.Equal(t, "unix:///run/cwagent-ebpf/otlp.sock", exp["endpoint"])
+	assert.NotContains(t, exp, "auth")
+}

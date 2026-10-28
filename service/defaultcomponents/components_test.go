@@ -101,6 +101,8 @@ func TestComponents(t *testing.T) {
 		"awsxray",
 		"debug",
 		"nop",
+		"otlp",
+		"otlp_grpc",
 		"otlphttp",
 		"otlp_http",
 		"prometheusremotewrite",

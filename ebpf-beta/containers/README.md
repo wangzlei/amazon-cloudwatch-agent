@@ -69,6 +69,25 @@ aws ecs create-service --cluster <c> --service-name cwagent-ebpf --task-definiti
 The regular agent must be a daemon on the same host, not a sidecar: the privileged container sees
 every task on the host and has one destination.
 
+## Unix socket instead of loopback TCP
+
+`127.0.0.1:4328` accepts metrics from any process on the host network. With a Unix socket only
+processes that may write the socket file can send:
+
+- regular agent: `receiver-unix.yaml` as `CW_OTEL_CONFIG_CONTENT` (or a file in
+  `etc/amazon-cloudwatch-agent.d/` on EC2), `CWAGENT_OTLP_SOCKET` = the socket path,
+  `AWS_REGION` set. It creates the socket (root, mode 0755 under the default umask, so only
+  root can connect) and removes it on a clean shutdown.
+- privileged container: command `-otelconfig /opt/aws/amazon-cloudwatch-agent/etc/ebpf/privileged-unix.yaml`,
+  same `CWAGENT_OTLP_SOCKET`. It sends OTLP/gRPC (`otlp_grpc` exporter, `unix://` endpoint);
+  the collector's OTLP/HTTP client has no Unix socket transport.
+- both containers mount the same host directory for the socket.
+- **a killed agent leaves the socket file behind**, and the next start fails with
+  `bind: address already in use`: remove it before the agent starts (EC2: `ExecStartPre`;
+  ECS / Kubernetes: an init step).
+
+Not possible with the EKS add-on today: its agent pod cannot mount an extra host directory.
+
 ## Required host mounts
 
 | Mount | Why |
