@@ -1,0 +1,78 @@
+{
+  "family": "cwagent-ebpf-privileged",
+  "requiresCompatibilities": [
+    "EC2"
+  ],
+  "networkMode": "host",
+  "pidMode": "host",
+  "executionRoleArn": "<TASK_EXECUTION_ROLE_ARN>",
+  "containerDefinitions": [
+    {
+      "name": "cwagent-ebpf",
+      "image": "<ACCOUNT>.dkr.ecr.<REGION>.amazonaws.com/cloudwatch-agent-ebpf-beta:<VERSION>",
+      "essential": true,
+      "privileged": true,
+      "stopTimeout": 30,
+      "memoryReservation": 256,
+      "memory": 1024,
+      "environment": [
+        {
+          "name": "CWAGENT_OTLP_ENDPOINT",
+          "value": "http://127.0.0.1:4328"
+        }
+      ],
+      "mountPoints": [
+        {
+          "sourceVolume": "bpffs",
+          "containerPath": "/sys/fs/bpf"
+        },
+        {
+          "sourceVolume": "tracefs",
+          "containerPath": "/sys/kernel/tracing"
+        },
+        {
+          "sourceVolume": "debugfs",
+          "containerPath": "/sys/kernel/debug"
+        },
+        {
+          "sourceVolume": "cgroup",
+          "containerPath": "/sys/fs/cgroup"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "<LOG_GROUP>",
+          "awslogs-region": "<REGION>",
+          "awslogs-stream-prefix": "cwagent-ebpf"
+        }
+      }
+    }
+  ],
+  "volumes": [
+    {
+      "name": "bpffs",
+      "host": {
+        "sourcePath": "/sys/fs/bpf"
+      }
+    },
+    {
+      "name": "tracefs",
+      "host": {
+        "sourcePath": "/sys/kernel/tracing"
+      }
+    },
+    {
+      "name": "debugfs",
+      "host": {
+        "sourcePath": "/sys/kernel/debug"
+      }
+    },
+    {
+      "name": "cgroup",
+      "host": {
+        "sourcePath": "/sys/fs/cgroup"
+      }
+    }
+  ]
+}

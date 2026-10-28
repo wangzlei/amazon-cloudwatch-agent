@@ -1,0 +1,99 @@
+# Privileged eBPF DaemonSet for the CloudWatch Agent eBPF beta on EKS.
+# Runs next to the amazon-cloudwatch-observability add-on (official CloudWatch Agent),
+# which receives the RED metrics over OTLP/HTTP on 127.0.0.1:4328 (see addon-config.json).
+# Both pods use the host network, so the agent's receiver stays on the node's loopback.
+#
+# Replace <IMAGE> with the image you built from ebpf-beta/containers/Dockerfile.
+# The pod gets no AWS credentials (no IRSA / Pod Identity): its service account can only
+# read Kubernetes metadata. OBI reads the VPC CIDRs from IMDS (host network).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cwagent-ebpf
+  namespace: amazon-cloudwatch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cwagent-ebpf
+rules:
+  # Kubernetes metadata for k8s.* attributes: read-only.
+  - apiGroups: [""]
+    resources: [pods, services, nodes, namespaces]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [replicasets, deployments, statefulsets, daemonsets]
+    verbs: [get, list, watch]
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cwagent-ebpf
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cwagent-ebpf
+subjects:
+  - kind: ServiceAccount
+    name: cwagent-ebpf
+    namespace: amazon-cloudwatch
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: cwagent-ebpf
+  namespace: amazon-cloudwatch
+  labels: {app.kubernetes.io/name: cwagent-ebpf}
+spec:
+  selector:
+    matchLabels: {app.kubernetes.io/name: cwagent-ebpf}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: cwagent-ebpf}
+    spec:
+      serviceAccountName: cwagent-ebpf
+      # hostPID: OBI must see every process on the node.
+      hostPID: true
+      # hostNetwork: the add-on's agent pod also runs on the host network, so the OTLP
+      # receiver is reached on loopback; IMDS (VPC CIDRs for the TCP-option peer name)
+      # works even with an IMDS hop limit of 1; and the agent's k8sattributes processor
+      # does not match this pod's IP to a pod (it would overwrite OBI's k8s.* attributes).
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      terminationGracePeriodSeconds: 30
+      nodeSelector: {kubernetes.io/os: linux}
+      containers:
+        - name: cwagent-ebpf
+          image: <IMAGE>
+          env:
+            # The add-on's agent on this node (host network, addon-config.json).
+            - name: CWAGENT_OTLP_ENDPOINT
+              value: http://127.0.0.1:4328
+            # OBI's Kubernetes decorator: this node's name.
+            - name: KUBE_NODE_NAME
+              valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+          securityContext:
+            # Kubernetes has no ambient capabilities: added capabilities only take
+            # effect for root. Everything else is dropped.
+            runAsUser: 0
+            capabilities:
+              drop: [ALL]
+              add: [BPF, PERFMON, SYS_PTRACE, DAC_READ_SEARCH, CHECKPOINT_RESTORE, NET_RAW,
+                    NET_ADMIN, SYS_ADMIN, KILL, SYS_CHROOT, SETUID, SETGID]
+            seccompProfile: {type: Unconfined}
+          resources:
+            requests: {cpu: 50m, memory: 256Mi}
+            limits: {memory: 1Gi}
+          volumeMounts:
+            - {name: bpffs, mountPath: /sys/fs/bpf}
+            - {name: tracefs, mountPath: /sys/kernel/tracing}
+            - {name: debugfs, mountPath: /sys/kernel/debug}
+            - {name: cgroup, mountPath: /sys/fs/cgroup, readOnly: true}
+      volumes:
+        - {name: bpffs, hostPath: {path: /sys/fs/bpf, type: Directory}}
+        - {name: tracefs, hostPath: {path: /sys/kernel/tracing}}
+        - {name: debugfs, hostPath: {path: /sys/kernel/debug}}
+        - {name: cgroup, hostPath: {path: /sys/fs/cgroup, type: Directory}}
