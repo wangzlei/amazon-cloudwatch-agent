@@ -20,7 +20,6 @@
 #                   translation (env-config.json) to the region the agent resolved for itself:
 #                   agent.region, credentials profile / AWS_REGION, EC2 / ECS metadata, else the
 #                   AWS_REGION environment variable. eBPF data goes to the agent's region.
-#   AWS_VPC_ID, AWS_SUBNET_ID  optional resource attributes (skipped when unset)
 #
 # Never use a double dollar sign in this file: cwagent expands it a second time
 # and fails on the result.
@@ -107,26 +106,15 @@ extensions:
     service: monitoring
 
 processors:
-  # AWS-flavored resource attributes. OBI's EC2 detection gives host.id / cloud.*.
-  # host.ip is derived only from an ip-a-b-c-d EC2 hostname (not from a pod name);
-  # VPC / subnet come in as AWS_VPC_ID / AWS_SUBNET_ID env and are skipped when unset.
-  transform/cwagent_ebpf_aws:
+  # Lambda Invoke by bare function name: OBI cannot know the account, so complete
+  # aws.lambda.function.arn from the host's cloud.account.id (the caller's account
+  # unless it uses cross-account credentials) + faas.invoked_region / _name.
+  # Account and region are not copied to aws.* resource attributes: the resource has
+  # cloud.account.id / cloud.region (and host.id), and CloudWatch adds @aws.account /
+  # @aws.region to every datapoint.
+  transform/cwagent_ebpf_lambda:
     error_mode: ignore
     metric_statements:
-      - context: resource
-        statements:
-          - set(attributes["ec2.instance.id"], attributes["host.id"]) where attributes["host.id"] != nil
-          - set(attributes["aws.account.id"], attributes["cloud.account.id"]) where attributes["cloud.account.id"] != nil
-          - set(attributes["aws.region"], attributes["cloud.region"]) where attributes["cloud.region"] != nil
-          - set(attributes["host.ip"], attributes["host.name"]) where attributes["host.name"] != nil and IsMatch(attributes["host.name"], "^ip-[0-9]+-[0-9]+-[0-9]+-[0-9]+")
-          - replace_pattern(attributes["host.ip"], "[.].*", "") where attributes["host.ip"] != nil
-          - replace_pattern(attributes["host.ip"], "^ip-", "") where attributes["host.ip"] != nil
-          - replace_pattern(attributes["host.ip"], "-", ".") where attributes["host.ip"] != nil
-          - set(attributes["aws.vpc.id"], "${env:AWS_VPC_ID}") where "${env:AWS_VPC_ID}" != ""
-          - set(attributes["aws.subnet.id"], "${env:AWS_SUBNET_ID}") where "${env:AWS_SUBNET_ID}" != ""
-      # Lambda Invoke by bare function name: OBI cannot know the account, so complete
-      # aws.lambda.function.arn from the host's cloud.account.id (the caller's account
-      # unless it uses cross-account credentials) + faas.invoked_region / _name.
       - context: datapoint
         statements:
           - set(attributes["aws.lambda.function.arn"], Concat(["arn:aws:lambda:", attributes["faas.invoked_region"], ":", resource.attributes["cloud.account.id"], ":function:", attributes["faas.invoked_name"]], "")) where attributes["aws.lambda.function.arn"] == nil and attributes["faas.invoked_name"] != nil and attributes["faas.invoked_region"] != nil and resource.attributes["cloud.account.id"] != nil
@@ -152,5 +140,5 @@ service:
   pipelines:
     metrics/cwagent_ebpf:
       receivers: [obi/cwagent_ebpf]
-      processors: [transform/cwagent_ebpf_aws, cumulativetodelta/cwagent_ebpf, batch/cwagent_ebpf]
+      processors: [transform/cwagent_ebpf_lambda, cumulativetodelta/cwagent_ebpf, batch/cwagent_ebpf]
       exporters: [otlp_http/cwagent_ebpf_cloudwatch]
