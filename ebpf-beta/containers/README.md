@@ -8,8 +8,8 @@ The package has two binaries, and each runs as its own process:
 | eBPF | `bin/amazon-cloudwatch-agent-ebpf` (OBI, config `ebpf/obi.yaml`) | the 12 eBPF capabilities | pushes OTLP/gRPC to the socket; sends nothing to AWS, listens on nothing |
 
 The agent loads its eBPF receiving pipeline (`etc/ebpf/receiver.yaml`) when
-`CWAGENT_EBPF_ENABLED=true` (on a host: `etc/ebpf/enabled`). The pipeline adds the AWS
-attributes, converts the metrics to delta and sends them to CloudWatch OTLP. The socket
+`CWAGENT_EBPF_ENABLED=true` (on a host: `etc/ebpf/enabled`). The pipeline completes Lambda
+function ARNs, converts the metrics to delta and sends them to CloudWatch OTLP. The socket
 directory is shared only by the two containers: an emptyDir in the pod, or a task volume.
 
 ## 1. Build the image

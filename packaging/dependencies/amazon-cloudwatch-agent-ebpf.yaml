@@ -6,8 +6,8 @@
 # The process runs from amazon-cloudwatch-agent-ebpf.service, which
 #   amazon-cloudwatch-agent-ctl -a enable-ebpf / -a disable-ebpf
 # turns on and off. It sends its RED metrics over OTLP/gRPC to the agent's Unix socket;
-# the agent (etc/ebpf/receiver.yaml) adds the AWS attributes, converts them to delta and
-# sends them to CloudWatch. This process holds no AWS credentials.
+# the agent (etc/ebpf/receiver.yaml) completes Lambda function ARNs, converts them to
+# delta and sends them to CloudWatch. This process holds no AWS credentials.
 #
 # Source: adot-obi config/otel.yaml (the receiver section, run standalone here).
 
