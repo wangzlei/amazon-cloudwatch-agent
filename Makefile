@@ -44,6 +44,16 @@ EBPF_OCI_BIN ?= docker
 .PHONY: ebpf-generate
 ebpf-generate:
 	$(MAKE) -C third_party/obi docker-generate OCI_BIN="$(EBPF_OCI_BIN)"
+
+# The eBPF process is its own binary, amazon-cloudwatch-agent-ebpf: OBI's cmd/obi built
+# from third_party/obi, a separate Go module (own go.mod), so the agent and OBI do not
+# share dependency versions. It sends OTLP to the agent over a Unix socket.
+EBPF_BUILD = CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w"
+.PHONY: amazon-cloudwatch-agent-ebpf-linux-amd64 amazon-cloudwatch-agent-ebpf-linux-arm64
+amazon-cloudwatch-agent-ebpf-linux-amd64: ebpf-generate
+	cd third_party/obi && GOARCH=amd64 $(EBPF_BUILD) -o $(abspath $(BUILD_SPACE))/bin/linux_amd64/amazon-cloudwatch-agent-ebpf ./cmd/obi
+amazon-cloudwatch-agent-ebpf-linux-arm64: ebpf-generate
+	cd third_party/obi && GOARCH=arm64 $(EBPF_BUILD) -o $(abspath $(BUILD_SPACE))/bin/linux_arm64/amazon-cloudwatch-agent-ebpf ./cmd/obi
 ALL_SRC := $(shell find . -name '*.go' -type f | sort)
 TOOLS_BIN_DIR := $(abspath ./build/tools)
 
@@ -78,7 +88,7 @@ copy-version-file: create-version-file
 
 amazon-cloudwatch-agent-linux: amazon-cloudwatch-agent-linux-amd64 amazon-cloudwatch-agent-linux-arm64
 
-amazon-cloudwatch-agent-linux-amd64: ebpf-generate copy-version-file workload-discovery-linux
+amazon-cloudwatch-agent-linux-amd64: amazon-cloudwatch-agent-ebpf-linux-amd64 copy-version-file workload-discovery-linux
 	@echo Building CloudWatchAgent for Linux AMD64
 	$(LINUX_AMD64_BUILD)/config-downloader github.com/aws/amazon-cloudwatch-agent/cmd/config-downloader
 	$(LINUX_AMD64_BUILD)/config-translator github.com/aws/amazon-cloudwatch-agent/cmd/config-translator
@@ -86,7 +96,7 @@ amazon-cloudwatch-agent-linux-amd64: ebpf-generate copy-version-file workload-di
 	$(LINUX_AMD64_BUILD)/start-amazon-cloudwatch-agent github.com/aws/amazon-cloudwatch-agent/cmd/start-amazon-cloudwatch-agent
 	$(LINUX_AMD64_BUILD)/amazon-cloudwatch-agent-config-wizard github.com/aws/amazon-cloudwatch-agent/cmd/amazon-cloudwatch-agent-config-wizard
 
-amazon-cloudwatch-agent-linux-arm64: ebpf-generate copy-version-file workload-discovery-linux
+amazon-cloudwatch-agent-linux-arm64: amazon-cloudwatch-agent-ebpf-linux-arm64 copy-version-file workload-discovery-linux
 	@echo Building CloudWatchAgent for Linux ARM64
 	$(LINUX_ARM64_BUILD)/config-downloader github.com/aws/amazon-cloudwatch-agent/cmd/config-downloader
 	$(LINUX_ARM64_BUILD)/config-translator github.com/aws/amazon-cloudwatch-agent/cmd/config-translator
@@ -147,7 +157,7 @@ workload-discovery-windows:
 # A fast build that only builds amd64, we don't need wizard and config downloader
 build-for-docker: build-for-docker-amd64
 
-build-for-docker-amd64: ebpf-generate
+build-for-docker-amd64: amazon-cloudwatch-agent-ebpf-linux-amd64
 	$(LINUX_AMD64_BUILD)/amazon-cloudwatch-agent github.com/aws/amazon-cloudwatch-agent/cmd/amazon-cloudwatch-agent
 	$(LINUX_AMD64_BUILD)/start-amazon-cloudwatch-agent github.com/aws/amazon-cloudwatch-agent/cmd/start-amazon-cloudwatch-agent
 	$(LINUX_AMD64_BUILD)/config-translator github.com/aws/amazon-cloudwatch-agent/cmd/config-translator
@@ -158,7 +168,7 @@ build-for-docker-windows-amd64:
 	$(WIN_BUILD)/start-amazon-cloudwatch-agent.exe github.com/aws/amazon-cloudwatch-agent/cmd/start-amazon-cloudwatch-agent
 	$(WIN_BUILD)/config-translator.exe github.com/aws/amazon-cloudwatch-agent/cmd/config-translator
 
-build-for-docker-arm64: ebpf-generate
+build-for-docker-arm64: amazon-cloudwatch-agent-ebpf-linux-arm64
 	$(LINUX_ARM64_BUILD)/amazon-cloudwatch-agent github.com/aws/amazon-cloudwatch-agent/cmd/amazon-cloudwatch-agent
 	$(LINUX_ARM64_BUILD)/start-amazon-cloudwatch-agent github.com/aws/amazon-cloudwatch-agent/cmd/start-amazon-cloudwatch-agent
 	$(LINUX_ARM64_BUILD)/config-translator github.com/aws/amazon-cloudwatch-agent/cmd/config-translator
@@ -275,7 +285,8 @@ package-prepare-rpm: amazon-cloudwatch-agent-linux copy-tools
 	cp $(BUILD_SPACE)/bin/CWAGENT_VERSION $(BUILD_SPACE)/private/linux/amd64/rpm/amazon-cloudwatch-agent-pre-pkg/
 	cp $(BASE_SPACE)/packaging/dependencies/amazon-cloudwatch-agent-ctl $(BUILD_SPACE)/private/linux/amd64/rpm/amazon-cloudwatch-agent-pre-pkg/
 	cp $(BASE_SPACE)/packaging/dependencies/amazon-cloudwatch-agent.service $(BUILD_SPACE)/private/linux/amd64/rpm/amazon-cloudwatch-agent-pre-pkg/
-	cp $(BASE_SPACE)/packaging/dependencies/amazon-cloudwatch-agent-ebpf.conf $(BUILD_SPACE)/private/linux/amd64/rpm/amazon-cloudwatch-agent-pre-pkg/
+	cp $(BASE_SPACE)/packaging/dependencies/amazon-cloudwatch-agent-ebpf.service $(BUILD_SPACE)/private/linux/amd64/rpm/amazon-cloudwatch-agent-pre-pkg/
+	cp $(BASE_SPACE)/packaging/dependencies/amazon-cloudwatch-agent-ebpf-receiver.yaml $(BUILD_SPACE)/private/linux/amd64/rpm/amazon-cloudwatch-agent-pre-pkg/
 	cp $(BASE_SPACE)/packaging/dependencies/amazon-cloudwatch-agent-ebpf.yaml $(BUILD_SPACE)/private/linux/amd64/rpm/amazon-cloudwatch-agent-pre-pkg/
 	cp $(BASE_SPACE)/cfg/commonconfig/common-config.toml $(BUILD_SPACE)/private/linux/amd64/rpm/amazon-cloudwatch-agent-pre-pkg/
 	cp $(BASE_SPACE)/packaging/linux/amazon-cloudwatch-agent.conf $(BUILD_SPACE)/private/linux/amd64/rpm/amazon-cloudwatch-agent-pre-pkg/
@@ -291,7 +302,8 @@ package-prepare-rpm: amazon-cloudwatch-agent-linux copy-tools
 	cp $(BUILD_SPACE)/bin/CWAGENT_VERSION $(BUILD_SPACE)/private/linux/arm64/rpm/amazon-cloudwatch-agent-pre-pkg/
 	cp $(BASE_SPACE)/packaging/dependencies/amazon-cloudwatch-agent-ctl $(BUILD_SPACE)/private/linux/arm64/rpm/amazon-cloudwatch-agent-pre-pkg/
 	cp $(BASE_SPACE)/packaging/dependencies/amazon-cloudwatch-agent.service $(BUILD_SPACE)/private/linux/arm64/rpm/amazon-cloudwatch-agent-pre-pkg/
-	cp $(BASE_SPACE)/packaging/dependencies/amazon-cloudwatch-agent-ebpf.conf $(BUILD_SPACE)/private/linux/arm64/rpm/amazon-cloudwatch-agent-pre-pkg/
+	cp $(BASE_SPACE)/packaging/dependencies/amazon-cloudwatch-agent-ebpf.service $(BUILD_SPACE)/private/linux/arm64/rpm/amazon-cloudwatch-agent-pre-pkg/
+	cp $(BASE_SPACE)/packaging/dependencies/amazon-cloudwatch-agent-ebpf-receiver.yaml $(BUILD_SPACE)/private/linux/arm64/rpm/amazon-cloudwatch-agent-pre-pkg/
 	cp $(BASE_SPACE)/packaging/dependencies/amazon-cloudwatch-agent-ebpf.yaml $(BUILD_SPACE)/private/linux/arm64/rpm/amazon-cloudwatch-agent-pre-pkg/
 	cp $(BASE_SPACE)/cfg/commonconfig/common-config.toml $(BUILD_SPACE)/private/linux/arm64/rpm/amazon-cloudwatch-agent-pre-pkg/
 	cp $(BASE_SPACE)/packaging/linux/amazon-cloudwatch-agent.conf $(BUILD_SPACE)/private/linux/arm64/rpm/amazon-cloudwatch-agent-pre-pkg/

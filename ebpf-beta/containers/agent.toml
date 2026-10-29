@@ -1,6 +1,0 @@
-# Minimal agent TOML for the privileged eBPF container: the agent binary always loads
-# a TOML (Telegraf side), but this container runs no Telegraf inputs or outputs, so
-# only the agent intervals are set. Logs go to stderr (no logfile).
-[agent]
-  interval = "60s"
-  flush_interval = "1s"

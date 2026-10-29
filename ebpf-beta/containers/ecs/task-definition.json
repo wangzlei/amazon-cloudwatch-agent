@@ -1,0 +1,59 @@
+{
+  "family": "cloudwatch-agent-ebpf",
+  "requiresCompatibilities": ["EC2"],
+  "networkMode": "host",
+  "pidMode": "host",
+  "taskRoleArn": "<TASK_ROLE_ARN>",
+  "executionRoleArn": "<TASK_EXECUTION_ROLE_ARN>",
+  "containerDefinitions": [
+    {
+      "name": "cloudwatch-agent",
+      "image": "<IMAGE>",
+      "essential": true,
+      "user": "10001",
+      "memoryReservation": 128,
+      "memory": 512,
+      "environment": [
+        {"name": "CWAGENT_EBPF_ENABLED", "value": "true"},
+        {"name": "CW_CONFIG_CONTENT", "value": "{\"agent\":{\"region\":\"<REGION>\"}}"}
+      ],
+      "mountPoints": [
+        {"sourceVolume": "ebpf-socket", "containerPath": "/opt/aws/amazon-cloudwatch-agent/var/ebpf"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {"awslogs-group": "<LOG_GROUP>", "awslogs-region": "<REGION>", "awslogs-stream-prefix": "cwagent"}
+      }
+    },
+    {
+      "name": "cloudwatch-agent-ebpf",
+      "image": "<IMAGE>",
+      "essential": true,
+      "entryPoint": ["/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ebpf"],
+      "command": ["-config", "/opt/aws/amazon-cloudwatch-agent/ebpf/obi.yaml"],
+      "privileged": true,
+      "stopTimeout": 30,
+      "memoryReservation": 256,
+      "memory": 1024,
+      "dependsOn": [{"containerName": "cloudwatch-agent", "condition": "START"}],
+      "mountPoints": [
+        {"sourceVolume": "ebpf-socket", "containerPath": "/opt/aws/amazon-cloudwatch-agent/var/ebpf"},
+        {"sourceVolume": "bpffs", "containerPath": "/sys/fs/bpf"},
+        {"sourceVolume": "tracefs", "containerPath": "/sys/kernel/tracing"},
+        {"sourceVolume": "debugfs", "containerPath": "/sys/kernel/debug"},
+        {"sourceVolume": "cgroup", "containerPath": "/sys/fs/cgroup"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {"awslogs-group": "<LOG_GROUP>", "awslogs-region": "<REGION>", "awslogs-stream-prefix": "cwagent-ebpf"}
+      }
+    }
+  ],
+  "volumes": [
+    {"name": "ebpf-socket", "dockerVolumeConfiguration": {"scope": "task", "driver": "local"}},
+    {"name": "bpffs", "host": {"sourcePath": "/sys/fs/bpf"}},
+    {"name": "tracefs", "host": {"sourcePath": "/sys/kernel/tracing"}},
+    {"name": "debugfs", "host": {"sourcePath": "/sys/kernel/debug"}},
+    {"name": "cgroup", "host": {"sourcePath": "/sys/fs/cgroup"}}
+  ]
+}

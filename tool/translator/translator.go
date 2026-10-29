@@ -174,7 +174,7 @@ func (ct *ConfigTranslator) Translate() (err error) {
 
 	envConfigPath := filepath.Join(tomlConfigDir, envConfigFileName)
 	cmdutil.TranslateJSONMapToEnvConfigFile(mergedJSONConfigMap, envConfigPath)
-	// The region the agent resolved, for the eBPF default config (etc/ebpf/obi.yaml); a
+	// The region the agent resolved, for the eBPF receiving pipeline (etc/ebpf/receiver.yaml); a
 	// stale value is removed when there is none.
 	region := map[string]string{}
 	if r := ct.resolvedRegion(); r != "" {

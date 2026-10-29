@@ -59,11 +59,15 @@ ln -f -s /opt/aws/amazon-cloudwatch-agent/var ${RPM_BUILD_ROOT}/var/run/amazon/a
 /opt/aws/amazon-cloudwatch-agent/bin/opentelemetry-jmx-metrics.jar
 /opt/aws/amazon-cloudwatch-agent/doc/amazon-cloudwatch-agent-schema.json
 %config(noreplace) /opt/aws/amazon-cloudwatch-agent/etc/common-config.toml
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ebpf
+# OBI's config: root-owned, outside etc/ (chowned to the agent's run_as_user at start).
+%dir /opt/aws/amazon-cloudwatch-agent/ebpf
+%config(noreplace) /opt/aws/amazon-cloudwatch-agent/ebpf/obi.yaml
 %dir /opt/aws/amazon-cloudwatch-agent/etc/ebpf
-%dir /opt/aws/amazon-cloudwatch-agent/share
-%dir /opt/aws/amazon-cloudwatch-agent/share/ebpf
-%config(noreplace) /opt/aws/amazon-cloudwatch-agent/etc/ebpf/obi.yaml
-/opt/aws/amazon-cloudwatch-agent/share/ebpf/systemd-dropin.conf
+%config(noreplace) /opt/aws/amazon-cloudwatch-agent/etc/ebpf/receiver.yaml
+# The agent's eBPF Unix socket: setgid group cwagent, so the socket the agent creates
+# (umask 007) is connectable by root and the cwagent group (the eBPF unit) only.
+%dir %attr(2770, root, cwagent) /opt/aws/amazon-cloudwatch-agent/var/ebpf
 /opt/aws/amazon-cloudwatch-agent/LICENSE
 /opt/aws/amazon-cloudwatch-agent/NOTICE
 
@@ -71,6 +75,7 @@ ln -f -s /opt/aws/amazon-cloudwatch-agent/var ${RPM_BUILD_ROOT}/var/run/amazon/a
 /opt/aws/amazon-cloudwatch-agent/RELEASE_NOTES
 /etc/init/amazon-cloudwatch-agent.conf
 /etc/systemd/system/amazon-cloudwatch-agent.service
+/etc/systemd/system/amazon-cloudwatch-agent-ebpf.service
 
 /usr/bin/amazon-cloudwatch-agent-ctl
 /etc/amazon/amazon-cloudwatch-agent
@@ -86,9 +91,10 @@ if [ $1 -ge 2 ]; then
     fi
 fi
 
-# eBPF is opt-in (marker etc/ebpf/enabled + drop-in installed by
-# "amazon-cloudwatch-agent-ctl -a enable-ebpf"). Hosts upgrading from the beta
-# versions where eBPF was always on (the RPM owned service.d/ebpf.conf) keep it on.
+# eBPF is opt-in (marker etc/ebpf/enabled + amazon-cloudwatch-agent-ebpf.service, both
+# turned on by "amazon-cloudwatch-agent-ctl -a enable-ebpf"). Hosts upgrading from the
+# in-agent beta (the agent itself ran OBI, through service.d/ebpf.conf) keep eBPF on:
+# the marker stays and %posttrans enables the eBPF unit.
 if [ $1 -ge 2 ] && [ -f /etc/systemd/system/amazon-cloudwatch-agent.service.d/ebpf.conf ]; then
     mkdir -p /opt/aws/amazon-cloudwatch-agent/etc/ebpf
     touch /opt/aws/amazon-cloudwatch-agent/etc/ebpf/enabled
@@ -116,21 +122,21 @@ fi
 # Full erase: remove the eBPF opt-in state, which the RPM does not own.
 if [ $1 -eq 0 ]; then
     rm -f /opt/aws/amazon-cloudwatch-agent/etc/ebpf/enabled
-    rm -f /etc/systemd/system/amazon-cloudwatch-agent.service.d/ebpf.conf
-    rmdir /etc/systemd/system/amazon-cloudwatch-agent.service.d 2>/dev/null || :
     if command -v systemctl >/dev/null 2>&1; then
         systemctl daemon-reload >/dev/null 2>&1 || :
     fi
 fi
 
 %posttrans
-# eBPF opted in: (re)install the systemd drop-in from the template. On an upgrade
-# from an always-on version the old package's erase removed its ebpf.conf.
-if [ -f /opt/aws/amazon-cloudwatch-agent/etc/ebpf/enabled ] && [ -f /opt/aws/amazon-cloudwatch-agent/share/ebpf/systemd-dropin.conf ]; then
-    mkdir -p /etc/systemd/system/amazon-cloudwatch-agent.service.d
-    cp -f /opt/aws/amazon-cloudwatch-agent/share/ebpf/systemd-dropin.conf /etc/systemd/system/amazon-cloudwatch-agent.service.d/ebpf.conf
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl daemon-reload >/dev/null 2>&1 || :
+# The in-agent beta's drop-in (the agent itself held the eBPF capabilities) is gone:
+# remove a copy installed by its ctl. eBPF opted in: enable the eBPF unit (cond-restart
+# below starts it with the agent).
+rm -f /etc/systemd/system/amazon-cloudwatch-agent.service.d/ebpf.conf
+rmdir /etc/systemd/system/amazon-cloudwatch-agent.service.d 2>/dev/null || :
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload >/dev/null 2>&1 || :
+    if [ -f /opt/aws/amazon-cloudwatch-agent/etc/ebpf/enabled ]; then
+        systemctl enable amazon-cloudwatch-agent-ebpf.service >/dev/null 2>&1 || :
     fi
 fi
 # restart agent after upgrade

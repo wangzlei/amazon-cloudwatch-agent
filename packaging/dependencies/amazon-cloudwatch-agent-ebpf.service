@@ -1,12 +1,12 @@
-# systemd drop-in installed as
-#   /etc/systemd/system/amazon-cloudwatch-agent.service.d/ebpf.conf
-# by "amazon-cloudwatch-agent-ctl -a enable-ebpf" (eBPF is opt-in; the RPM ships
-# this file as the template share/ebpf/systemd-dropin.conf; it must stay out of
-# etc/, which ExecStartPre below chowns to cwagent).
-# Runs the agent as the unprivileged cwagent user with only the capabilities the
-# ADOT OBI eBPF receiver needs (raised as ambient, so they survive the exec of the
-# agent binary). start-amazon-cloudwatch-agent skips its own run_as_user switch
-# when it is not started as root.
+# Amazon CloudWatch Agent eBPF instrumentation: OBI (amazon-cloudwatch-agent-ebpf) as
+# its own process. It sends OTLP/gRPC to the agent over the Unix socket
+# /opt/aws/amazon-cloudwatch-agent/var/ebpf/otlp.sock; the agent forwards to CloudWatch.
+# Only this process holds capabilities; the agent itself runs as usual (no capabilities).
+# Disabled by default: "amazon-cloudwatch-agent-ctl -a enable-ebpf" enables and starts it,
+# "-a disable-ebpf" stops and disables it.
+#
+# Runs as the unprivileged cwagent user with only the capabilities OBI needs, raised as
+# ambient so they survive the exec.
 # CAP_SYS_ADMIN is required for TCP context propagation on kernels with commit
 # 929e30f93125 (6.6.128+, 6.12.75+, 6.18.14+, 6.19+): there OBI loads a FIONREAD
 # compensation BPF program that uses bpf_probe_write_user, which the verifier only
@@ -22,21 +22,34 @@
 # JVM's owner and back (Go's Seteuid applies to all threads). Without this bit the
 # kernel clears the effective capabilities of every thread when the euid goes from 0
 # (a root JVM) back to cwagent, and eBPF stops working for the rest of the run.
+[Unit]
+Description=Amazon CloudWatch Agent eBPF instrumentation
+After=network.target amazon-cloudwatch-agent.service
+
 [Service]
+Type=simple
 User=cwagent
 Group=cwagent
 AmbientCapabilities=CAP_BPF CAP_PERFMON CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_CHECKPOINT_RESTORE CAP_NET_RAW CAP_NET_ADMIN CAP_SYS_ADMIN CAP_KILL CAP_SYS_CHROOT CAP_SETUID CAP_SETGID
 CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_CHECKPOINT_RESTORE CAP_NET_RAW CAP_NET_ADMIN CAP_SYS_ADMIN CAP_KILL CAP_SYS_CHROOT CAP_SETUID CAP_SETGID
 SecureBits=no-setuid-fixup
 LimitMEMLOCK=infinity
-# The agent writes logs/ and var/ and reads etc/ (written by the ctl as root).
-# "+" runs this one step as root.
-ExecStartPre=+/bin/chown -R cwagent:cwagent /opt/aws/amazon-cloudwatch-agent/logs /opt/aws/amazon-cloudwatch-agent/var /opt/aws/amazon-cloudwatch-agent/etc
 # OBI pins maps shared with other OTel eBPF components under /sys/fs/bpf/otel.
 # /sys/fs/bpf is root-only: prepare that one directory (and any pins a previous
 # root run left there) for cwagent, or OBI fails with "load pinned map: permission
 # denied" (existing root-owned dir) or runs with pinning disabled (no dir).
-# "-": without bpffs (/sys/fs/bpf not mounted) these fail; the agent still starts
-# and OBI runs with pinning disabled.
+# "-": without bpffs (/sys/fs/bpf not mounted) these fail; OBI still starts with
+# pinning disabled. "+" runs the step as root.
 ExecStartPre=-+/bin/mkdir -p /sys/fs/bpf/otel
 ExecStartPre=-+/bin/chown -R cwagent:cwagent /sys/fs/bpf/otel
+# The config is root-owned, in ebpf/: not in etc/, logs/ or var/, which
+# start-amazon-cloudwatch-agent chowns to the agent's run_as_user (cwagent could then
+# change what this privileged process instruments).
+ExecStart=/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ebpf -config /opt/aws/amazon-cloudwatch-agent/ebpf/obi.yaml
+Restart=on-failure
+RestartSec=10s
+# Detaching the probes takes longer than the default 10 s on busy hosts.
+TimeoutStopSec=30s
+
+[Install]
+WantedBy=multi-user.target

@@ -1,10 +1,11 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT
 
-// Package configtest checks that the eBPF default config shipped in the RPM
-// (etc/ebpf/obi.yaml) loads and validates with the components compiled into
+// Package configtest checks that the agent's eBPF receiving pipeline shipped in the RPM
+// (etc/ebpf/receiver.yaml) loads and validates with the components compiled into
 // this agent, through the agent's own config provider (service/configprovider,
-// including its extra env expansion), like `otelcol validate`.
+// including its extra env expansion), like `otelcol validate`. The eBPF process's
+// own config (ebpf/obi.yaml) is checked by ebpf-beta/obiconfigtest.
 package configtest
 
 import (
@@ -24,7 +25,7 @@ import (
 	"github.com/aws/amazon-cloudwatch-agent/service/defaultcomponents"
 )
 
-const rpmConfig = "../../packaging/dependencies/amazon-cloudwatch-agent-ebpf.yaml"
+const rpmConfig = "../../packaging/dependencies/amazon-cloudwatch-agent-ebpf-receiver.yaml"
 
 func setCreds(t *testing.T) {
 	// sigv4auth resolves a credential provider during validation.
@@ -52,17 +53,18 @@ func TestRPMDefaultEBPFConfigValidates(t *testing.T) {
 	require.NoError(t, col.DryRun(context.Background()))
 }
 
-// RED metrics only: every discovery instrument entry exports metrics, so OBI builds no
-// spans, and the only pipeline is metrics to CloudWatch (no traces, no debug exporter).
-func TestRPMDefaultEBPFConfigExportsMetricsOnly(t *testing.T) {
+// The only receiver is OTLP/gRPC on the eBPF Unix socket, the only pipeline sends metrics
+// to CloudWatch (no traces, no debug exporter).
+func TestRPMDefaultEBPFConfigReceivesOnTheSocketAndExportsMetricsOnly(t *testing.T) {
 	setCreds(t)
 	r, err := confmap.NewResolver(configprovider.GetSettings([]string{rpmConfig}, zap.NewNop()).ResolverSettings)
 	require.NoError(t, err)
 	conf, err := r.Resolve(context.Background())
 	require.NoError(t, err)
-	for _, e := range conf.Get("receivers::obi/cwagent_ebpf::discovery::instrument").([]any) {
-		assert.Equal(t, "metrics", e.(map[string]any)["exports"], "instrument entry %v", e)
-	}
+	assert.Equal(t, []string{"otlp/cwagent_ebpf"}, keys(conf.Get("receivers").(map[string]any)))
+	assert.Equal(t, "/opt/aws/amazon-cloudwatch-agent/var/ebpf/otlp.sock", conf.Get("receivers::otlp/cwagent_ebpf::protocols::grpc::endpoint"))
+	assert.Equal(t, "unix", conf.Get("receivers::otlp/cwagent_ebpf::protocols::grpc::transport"))
+	assert.Nil(t, conf.Get("receivers::otlp/cwagent_ebpf::protocols::http"))
 	pipelines := conf.Get("service::pipelines").(map[string]any)
 	assert.Equal(t, []string{"metrics/cwagent_ebpf"}, keys(pipelines))
 	assert.Equal(t, []string{"otlp_http/cwagent_ebpf_cloudwatch"}, keys(conf.Get("exporters").(map[string]any)))
@@ -74,21 +76,6 @@ func keys(m map[string]any) []string {
 		out = append(out, k)
 	}
 	return out
-}
-
-// Defaults chosen from the EC2 performance tests (perf-ec2, 2026-10-22/23): BPF maps at half
-// size (agent memory ~330 MB -> ~170 MB, RED exact up to ~4k requests in flight) and no
-// Node.js injector (RED does not need it; it cost +340 us CPU per request).
-func TestRPMDefaultEBPFConfigPerformanceDefaults(t *testing.T) {
-	setCreds(t)
-	r, err := confmap.NewResolver(configprovider.GetSettings([]string{rpmConfig}, zap.NewNop()).ResolverSettings)
-	require.NoError(t, err)
-	conf, err := r.Resolve(context.Background())
-	require.NoError(t, err)
-	assert.EqualValues(t, -1, conf.Get("receivers::obi/cwagent_ebpf::ebpf::maps_config::global_scale_factor"))
-	assert.Equal(t, false, conf.Get("receivers::obi/cwagent_ebpf::nodejs::enabled"))
-	// SDK-instrumented processes keep their eBPF RED (upstream default true drops them).
-	assert.Equal(t, false, conf.Get("receivers::obi/cwagent_ebpf::discovery::exclude_otel_instrumented_services"))
 }
 
 // The exporters and sigv4auth use CWAGENT_REGION (the region the agent resolved, written to
@@ -117,7 +104,7 @@ func TestRPMDefaultEBPFConfigRegion(t *testing.T) {
 }
 
 // A user YAML (etc/amazon-cloudwatch-agent.d/ or CW_OTEL_CONFIG_CONTENT) with the usual
-// component and pipeline names must merge with the eBPF default config: the agent rejects
+// component and pipeline names must merge with the eBPF receiving pipeline: the agent rejects
 // duplicate keys that differ (internal/merge/confmap), so every name there is
 // <type>/cwagent_ebpf...
 func TestRPMDefaultEBPFConfigMergesWithUserYAML(t *testing.T) {

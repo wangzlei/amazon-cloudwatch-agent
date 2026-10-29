@@ -32,12 +32,14 @@ cp ${PREPKGPATH}/CWAGENT_VERSION ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch
 cp ${PREPKGPATH}/amazon-cloudwatch-agent ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch-agent/bin/
 cp ${PREPKGPATH}/amazon-cloudwatch-agent-ctl ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch-agent/bin/
 cp ${PREPKGPATH}/amazon-cloudwatch-agent.service ${BUILD_ROOT}/SOURCES/etc/systemd/system/
-mkdir -p ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch-agent/etc/ebpf ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch-agent/share/ebpf
-# eBPF is opt-in: the drop-in is a template that "ctl -a enable-ebpf" installs.
-# It lives in share/, not etc/: the drop-in chowns etc/ to cwagent at every start,
-# and root copies the template into /etc/systemd/system.
-cp ${PREPKGPATH}/amazon-cloudwatch-agent-ebpf.conf ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch-agent/share/ebpf/systemd-dropin.conf
-cp ${PREPKGPATH}/amazon-cloudwatch-agent-ebpf.yaml ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch-agent/etc/ebpf/obi.yaml
+# eBPF (opt-in): its own binary and systemd unit (disabled until "ctl -a enable-ebpf"),
+# OBI's config (ebpf/, root-owned: not chowned to the agent's user like etc/), the
+# agent's receiving pipeline (etc/ebpf/), and var/ebpf for the Unix socket.
+mkdir -p ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch-agent/ebpf ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch-agent/etc/ebpf ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch-agent/var/ebpf
+cp ${PREPKGPATH}/amazon-cloudwatch-agent-ebpf ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch-agent/bin/
+cp ${PREPKGPATH}/amazon-cloudwatch-agent-ebpf.service ${BUILD_ROOT}/SOURCES/etc/systemd/system/
+cp ${PREPKGPATH}/amazon-cloudwatch-agent-ebpf.yaml ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch-agent/ebpf/obi.yaml
+cp ${PREPKGPATH}/amazon-cloudwatch-agent-ebpf-receiver.yaml ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch-agent/etc/ebpf/receiver.yaml
 cp ${PREPKGPATH}/config-translator ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch-agent/bin/
 cp ${PREPKGPATH}/config-downloader ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch-agent/bin/
 cp ${PREPKGPATH}/amazon-cloudwatch-agent-config-wizard ${BUILD_ROOT}/SOURCES/opt/aws/amazon-cloudwatch-agent/bin/

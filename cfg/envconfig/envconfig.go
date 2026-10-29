@@ -20,7 +20,8 @@ const (
 	AWS_USE_DUALSTACK_ENDPOINT  = "AWS_USE_DUALSTACK_ENDPOINT" //nolint:revive
 	CWAGENT_USER_AGENT          = "CWAGENT_USER_AGENT"         //nolint:revive
 	CWAGENT_LOG_LEVEL           = "CWAGENT_LOG_LEVEL"          //nolint:revive
-	CWAGENT_REGION              = "CWAGENT_REGION"             //nolint:revive // region the translation resolved for the agent (unset if none); read by etc/ebpf/obi.yaml
+	CWAGENT_REGION              = "CWAGENT_REGION"             //nolint:revive // region the translation resolved for the agent (unset if none); read by etc/ebpf/receiver.yaml
+	CWAgentEBPFEnabled          = "CWAGENT_EBPF_ENABLED"       // "true" in a container: load etc/ebpf/receiver.yaml (the host uses etc/ebpf/enabled)
 	CWAGENT_ROLE                = "CWAGENT_ROLE"               //nolint:revive
 	CWAGENT_USAGE_DATA          = "CWAGENT_USAGE_DATA"         //nolint:revive
 	IMDS_NUMBER_RETRY           = "IMDS_NUMBER_RETRY"          //nolint:revive

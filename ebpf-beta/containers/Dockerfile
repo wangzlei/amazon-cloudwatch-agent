@@ -1,41 +1,37 @@
-# Privileged eBPF container image for the CloudWatch Agent eBPF beta, built by the user
-# from the published release tarballs (nothing here compiles code or downloads files).
+# CloudWatch Agent eBPF beta image, built by the user from the release tarball (nothing here
+# compiles code or downloads files). One image with the whole package: the agent
+# (entrypoint start-amazon-cloudwatch-agent, as the official image) and the eBPF process
+# (bin/amazon-cloudwatch-agent-ebpf, OBI). Run them as two containers of one pod / task
+# that share the socket directory var/ebpf: see README.md.
 #
 # Build context (a directory you create):
 #   amazon-cloudwatch-agent-amd64.tar.gz   release tarball, linux/amd64
 #   amazon-cloudwatch-agent-arm64.tar.gz   release tarball, linux/arm64 (multi-arch only)
-#   Dockerfile, privileged.yaml, privileged-unix.yaml, agent.toml  from ebpf-beta/containers/
+#   Dockerfile                             this file
 #
 #   docker buildx build --platform linux/amd64,linux/arm64 \
 #     -t <account>.dkr.ecr.<region>.amazonaws.com/cloudwatch-agent-ebpf-beta:<version> --push .
-#
-# The image runs only the obi receiver pipeline and exports OTLP/HTTP to the regular
-# CloudWatch Agent (official image) on the same node: privileged.yaml (loopback TCP, the
-# default command) or privileged-unix.yaml (Unix socket). See README.md.
 ARG BASE_IMAGE=public.ecr.aws/amazonlinux/amazonlinux:2023
+# The agent container runs as this non-root user: it owns the dirs the agent writes
+# (etc/: the translated config, logs/, var/: pid file and the eBPF socket).
+ARG AGENT_UID=10001
 
 # Arch-independent unpacking: runs on the build platform, so a multi-arch build needs
 # no emulation.
 FROM --platform=$BUILDPLATFORM $BASE_IMAGE AS unpack
 ARG TARGETARCH
+ARG AGENT_UID
 RUN dnf install -y tar gzip ca-certificates && dnf clean all
 COPY amazon-cloudwatch-agent-${TARGETARCH}.tar.gz /tmp/agent.tar.gz
-RUN mkdir -p /tmp/x /out && tar -xzf /tmp/agent.tar.gz -C /tmp/x \
+RUN mkdir -p /tmp/x /out/tmp && tar -xzf /tmp/agent.tar.gz -C /tmp/x \
  && tar -xzf /tmp/x/amazon-cloudwatch-agent-ebpf-beta/payload.tar.gz -C /tmp/x \
- && mkdir -p /out/opt/aws/amazon-cloudwatch-agent/bin /out/opt/aws/amazon-cloudwatch-agent/etc/ebpf \
-             /out/opt/aws/amazon-cloudwatch-agent/var /out/opt/aws/amazon-cloudwatch-agent/logs /out/tmp \
- && cp /tmp/x/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent \
-       /tmp/x/opt/aws/amazon-cloudwatch-agent/bin/CWAGENT_VERSION /out/opt/aws/amazon-cloudwatch-agent/bin/ \
- && cp /tmp/x/opt/aws/amazon-cloudwatch-agent/LICENSE /tmp/x/opt/aws/amazon-cloudwatch-agent/NOTICE \
-       /tmp/x/opt/aws/amazon-cloudwatch-agent/THIRD-PARTY-LICENSES /out/opt/aws/amazon-cloudwatch-agent/ \
+ && cp -a /tmp/x/opt /out/ && A=/out/opt/aws/amazon-cloudwatch-agent \
+ && rm -rf $A/var/ebpf && mkdir -p $A/var/ebpf $A/logs \
+ && chown -R ${AGENT_UID}:${AGENT_UID} $A/etc $A/logs $A/var && chmod 0770 $A/var/ebpf \
  && chmod 1777 /out/tmp
-COPY privileged.yaml privileged-unix.yaml agent.toml /out/opt/aws/amazon-cloudwatch-agent/etc/ebpf/
 
 FROM scratch
 COPY --from=unpack /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=unpack /out/ /
 ENV RUN_IN_CONTAINER="True"
-ENTRYPOINT ["/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent", \
-  "-config", "/opt/aws/amazon-cloudwatch-agent/etc/ebpf/agent.toml"]
-# Unix socket: -otelconfig /opt/aws/amazon-cloudwatch-agent/etc/ebpf/privileged-unix.yaml
-CMD ["-otelconfig", "/opt/aws/amazon-cloudwatch-agent/etc/ebpf/privileged.yaml"]
+ENTRYPOINT ["/opt/aws/amazon-cloudwatch-agent/bin/start-amazon-cloudwatch-agent"]

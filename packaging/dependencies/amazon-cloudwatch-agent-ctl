@@ -21,15 +21,13 @@ readonly JSON_DIR="${CONFDIR}/amazon-cloudwatch-agent.d"
 readonly CV_LOG_FILE="${AGENTDIR}/logs/configuration-validation.log"
 readonly COMMON_CONIG="${CONFDIR}/common-config.toml"
 readonly ENV_CONFIG="${CONFDIR}/env-config.json"
-# eBPF (ADOT OBI) is opt-in: the marker makes start-amazon-cloudwatch-agent load
-# etc/ebpf/obi.yaml, and the systemd drop-in (installed from the RPM's template)
-# runs the agent as cwagent with the capabilities the eBPF receiver needs.
+# eBPF (ADOT OBI) is opt-in. When enabled, its own process (amazon-cloudwatch-agent-ebpf,
+# the only one with capabilities) runs from a second systemd unit and pushes OTLP over a
+# Unix socket to the agent, and the marker makes start-amazon-cloudwatch-agent load the
+# agent's receiving pipeline etc/ebpf/receiver.yaml.
 readonly EBPF_DIR="${CONFDIR}/ebpf"
 readonly EBPF_MARKER="${EBPF_DIR}/enabled"
-# The template is in share/ (root-owned), not etc/ (chowned to cwagent at start).
-readonly EBPF_DROPIN_TEMPLATE="${AGENTDIR}/share/ebpf/systemd-dropin.conf"
-readonly EBPF_DROPIN_DIR="/etc/systemd/system/amazon-cloudwatch-agent.service.d"
-readonly EBPF_DROPIN="${EBPF_DROPIN_DIR}/ebpf.conf"
+readonly EBPF_NAME='amazon-cloudwatch-agent-ebpf'
 
 readonly CWA_NAME='amazon-cloudwatch-agent'
 readonly ALL_CONFIG='all'
@@ -68,8 +66,8 @@ UsageString="
             remove-config:                          remove config for agent, followed by -c. Target config can be based on the location (ssm parameter store name, file name), or 'all'.
             set-log-level:                          sets the log level, followed by -l to provide the level in all caps.
             set-env:                                sets an environment variable for the agent process, followed by -e to provide KEY=VALUE.
-            enable-ebpf:                            turn on eBPF (ADOT OBI) instrumentation: runs the agent as cwagent with the eBPF capabilities and loads etc/ebpf/obi.yaml. Restarts the agent, or starts it (with the default config if none) when it is stopped.
-            disable-ebpf:                           turn off eBPF instrumentation (the default) and restart the agent if it is running.
+            enable-ebpf:                            turn on eBPF (ADOT OBI) instrumentation: enables and starts amazon-cloudwatch-agent-ebpf.service (the only process with the eBPF capabilities) and makes the agent receive its data (etc/ebpf/receiver.yaml). Restarts the agent, or starts it (with the default config if none) when it is stopped.
+            disable-ebpf:                           turn off eBPF instrumentation (the default): stops and disables the eBPF unit and restarts the agent if it is running.
 
         -m: mode
             ec2:                                    indicate this is on ec2 host.
@@ -105,6 +103,22 @@ start_all() {
      echo ""
      echo "****** processing amazon-cloudwatch-agent ******"
      agent_start "${CWA_NAME}" "${mode}"
+     ebpf_start
+}
+
+# The eBPF unit follows the agent while eBPF is enabled (started after it: the agent
+# creates the Unix socket).
+ebpf_start() {
+     if [ -f "${EBPF_MARKER}" ] && [ "${SYSTEMD}" = 'true' ]; then
+          systemctl enable "${EBPF_NAME}.service" || return
+          systemctl restart "${EBPF_NAME}.service" || return
+     fi
+}
+
+ebpf_stop() {
+     if [ "${SYSTEMD}" = 'true' ] && systemctl is-active "${EBPF_NAME}.service" 1>/dev/null 2>&1; then
+          systemctl stop "${EBPF_NAME}.service" || return
+     fi
 }
 
 agent_start() {
@@ -135,6 +149,7 @@ stop_all() {
 
      echo ""
      echo "****** processing amazon-cloudwatch-agent ******"
+     ebpf_stop
      agent_stop_and_disable "${CWA_NAME}"
 }
 
@@ -182,11 +197,16 @@ agent_cond_restart() {
      restart_file="${2:-}"
      if [ -f "${restart_file}" ]; then
           agent_start "${agent_name}" "${mode}"
+          ebpf_start
           rm -f "${restart_file}"
      fi
 }
 
 preun_all() {
+     ebpf_stop
+     if [ "${SYSTEMD}" = 'true' ]; then
+          systemctl disable "${EBPF_NAME}.service" >/dev/null 2>&1 || :
+     fi
      agent_preun "${CWA_NAME}"
 }
 
@@ -201,10 +221,12 @@ agent_preun() {
 }
 
 ebpf_status() {
-     if [ -f "${EBPF_MARKER}" ]; then
-          echo "enabled"
-     else
+     if [ ! -f "${EBPF_MARKER}" ]; then
           echo "disabled"
+     elif [ "${SYSTEMD}" = 'true' ] && systemctl is-active "${EBPF_NAME}.service" 1>/dev/null 2>&1; then
+          echo "running"
+     else
+          echo "stopped"
      fi
 }
 
@@ -215,29 +237,26 @@ enable_ebpf() {
           echo "enable-ebpf requires systemd" >&2
           exit 1
      fi
-     if [ ! -f "${EBPF_DROPIN_TEMPLATE}" ]; then
-          echo "eBPF systemd drop-in template ${EBPF_DROPIN_TEMPLATE} not found" >&2
-          exit 1
-     fi
-     mkdir -p "${EBPF_DIR}" "${EBPF_DROPIN_DIR}"
+     mkdir -p "${EBPF_DIR}"
      touch "${EBPF_MARKER}"
-     cp -f "${EBPF_DROPIN_TEMPLATE}" "${EBPF_DROPIN}"
      systemctl daemon-reload
      echo "eBPF enabled"
 
+     # The agent first: it loads receiver.yaml and creates the socket.
      if [ "$(runstatus ${CWA_NAME})" = 'running' ]; then
           systemctl restart "${CWA_NAME}.service"
+          ebpf_start
      else
           start_all "${mode}"
      fi
 }
 
 disable_ebpf() {
-     rm -f "${EBPF_MARKER}" "${EBPF_DROPIN}"
-     rmdir "${EBPF_DROPIN_DIR}" 2>/dev/null || :
+     ebpf_stop
      if [ "${SYSTEMD}" = 'true' ]; then
-          systemctl daemon-reload
+          systemctl disable "${EBPF_NAME}.service" >/dev/null 2>&1 || :
      fi
+     rm -f "${EBPF_MARKER}"
      echo "eBPF disabled"
 
      if [ "$(runstatus ${CWA_NAME})" = 'running' ]; then

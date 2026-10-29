@@ -1,0 +1,23 @@
+# Config of the eBPF process (amazon-cloudwatch-agent-ebpf, OBI) for the e2e test
+# (rendered by run-e2e.sh): it pushes metrics and spans over OTLP/gRPC to the agent's
+# Unix socket, as ebpf/obi.yaml does.
+enforce_sys_caps: false
+discovery:
+  instrument:
+    - open_ports: "@FRONTEND_PORT@"
+      name: e2e-frontend
+    - open_ports: "@BACKEND_PORT@"
+      name: e2e-backend
+ebpf:
+  context_propagation: "@CP@"
+attributes:
+  kubernetes:
+    enable: "false"
+otel_metrics_export:
+  endpoint: "unix://@SOCKET@"
+  protocol: grpc
+  interval: 5s
+otel_traces_export:
+  endpoint: "unix://@SOCKET@"
+  protocol: grpc
+  batch_timeout: 2s

@@ -6,9 +6,11 @@ name: ebpf-beta
 #
 #   gates  three parallel jobs: deps (tidy + dependency-version gate + vet), unit (tests),
 #          cross (linux/amd64, linux/arm64, windows/amd64 builds)
-#   e2e    agent with restricted capabilities on the runner's kernel (sudo + capsh)
+#   e2e    the eBPF binary with restricted capabilities (sudo + capsh) pushing to the agent
+#          (no capabilities) over a Unix socket, on the runner's kernel
 #   rpm    make package-rpm (amd64 + arm64) -> workflow artifact
-#   image  official-layout image (ebpf-beta/image/Dockerfile), linux/amd64 + arm64, pushed to
+#   image  the whole package (ebpf-beta/containers/Dockerfile, from the tarballs), linux/amd64
+#          + arm64, pushed to
 #          ghcr.io/<owner>/cloudwatch-agent-ebpf-beta:<sha7> (+ latest on branch ebpf-beta,
 #          + <release> on a release run); pull requests only build and smoke-test it
 #   release  manual run (Actions > ebpf-beta > Run workflow) with input "release", e.g.
@@ -149,6 +151,7 @@ jobs:
           [[ $GITHUB_REF == refs/heads/ebpf-beta ]] && tags="$tags latest"
           [[ -n $RELEASE ]] && tags="$tags $RELEASE"
           export IMAGE_TAGS=$tags IMAGE_PUSH=$PUSH
+          command -v rpmbuild || sudo apt-get install -y rpm   # the image is built from the RPM tarballs
           ebpf-beta/ci/run.sh image
           if [[ $PUSH == 1 ]]; then
             for t in $tags; do echo "- \`$IMAGE:$t\`" >> "$GITHUB_STEP_SUMMARY"; done

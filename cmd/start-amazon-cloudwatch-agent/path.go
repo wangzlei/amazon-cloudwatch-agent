@@ -7,6 +7,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -31,7 +32,7 @@ func startAgent(writer io.WriteCloser) error {
 			"-config", paths.TomlConfigPath,
 			"-envconfig", paths.EnvConfigPath,
 		}
-		// eBPF default config (etc/ebpf/obi.yaml) when opted in, as on the host below.
+		// eBPF receiving pipeline (etc/ebpf/receiver.yaml) when opted in, as on the host below.
 		execArgs = append(execArgs, ebpfConfigArgs()...)
 		execArgs = append(execArgs, config.GetOTELConfigArgs(paths.CONFIG_DIR_IN_CONTAINER)...)
 		execArgs = append(execArgs, "-pidfile", paths.AgentDir+"/var/amazon-cloudwatch-agent.pid")
@@ -51,13 +52,8 @@ func startAgent(writer io.WriteCloser) error {
 	runAsUser, _ := user.DetectRunAsUser(configMap)
 	log.Printf("I! Detected runAsUser: %v", runAsUser)
 
-	if os.Geteuid() != 0 {
-		// Started unprivileged: only when eBPF is enabled, whose systemd drop-in
-		// runs the agent as User=cwagent with ambient capabilities for the eBPF
-		// receiver. There is no user to switch to, and the chown and setgroups
-		// that ChangeUser does would fail without root.
-		log.Printf("I! Running as uid %d, not root: skipping run_as_user %q", os.Geteuid(), runAsUser)
-	} else if _, err = user.ChangeUser(runAsUser); err != nil {
+	_, err = user.ChangeUser(runAsUser)
+	if err != nil {
 		log.Printf("E! Failed to ChangeUser: %v ", err)
 		return err
 	}
@@ -68,7 +64,7 @@ func startAgent(writer io.WriteCloser) error {
 		return err
 	}
 
-	// Before the log file is closed: it logs whether the eBPF config is used.
+	// Before the log file is closed: it logs whether the eBPF pipeline is used.
 	ebpfArgs := ebpfConfigArgs()
 
 	if err := writer.Close(); err != nil {
@@ -94,28 +90,38 @@ func startAgent(writer io.WriteCloser) error {
 	return nil
 }
 
-// ebpfConfigArgs returns the -otelconfig pair for the default eBPF (ADOT OBI)
-// config shipped by the RPM in etc/ebpf/, but only when eBPF is opted in, i.e.
-// etc/ebpf/enabled exists. The marker is created by
-// "amazon-cloudwatch-agent-ctl -a enable-ebpf" (which also installs the systemd
-// drop-in that grants the capabilities) and removed by "-a disable-ebpf". Without
-// it the agent behaves like the official one. The config is kept outside
-// amazon-cloudwatch-agent.d so that fetch-config, which empties that directory,
-// does not delete it. Note that a YAML in amazon-cloudwatch-agent.d cannot
-// redefine the components it declares: the merge rejects duplicate keys in
-// receivers, processors, exporters, extensions and service::pipelines. Edit
-// etc/ebpf/obi.yaml (%config(noreplace)) to change it.
+// ebpfConfigArgs returns the -otelconfig pair for the agent's eBPF receiving pipeline
+// (etc/ebpf/receiver.yaml), but only when eBPF is opted in: etc/ebpf/enabled exists
+// (created by "amazon-cloudwatch-agent-ctl -a enable-ebpf", which also enables the eBPF
+// unit) or, in a container, CWAGENT_EBPF_ENABLED=true. Without it the agent behaves like
+// the official one. The pipeline receives OTLP from the eBPF process
+// (amazon-cloudwatch-agent-ebpf, OBI) on the Unix socket var/ebpf/otlp.sock. The config
+// is kept outside amazon-cloudwatch-agent.d so that fetch-config, which empties that
+// directory, does not delete it; a YAML in amazon-cloudwatch-agent.d cannot redefine the
+// components it declares (the merge rejects duplicate keys).
+//
+// When enabled it also prepares the socket: a socket left by a killed agent makes the
+// receiver fail with "address already in use", so it is removed, and the agent runs with
+// umask 007 so the socket it creates in the setgid var/ebpf directory (group cwagent) is
+// connectable by its owner and the cwagent group (the eBPF unit's user) only.
 func ebpfConfigArgs() []string {
-	cfg := filepath.Join(paths.AgentDir, "etc", "ebpf", "obi.yaml")
+	cfg := filepath.Join(paths.AgentDir, "etc", "ebpf", "receiver.yaml")
 	marker := filepath.Join(paths.AgentDir, "etc", "ebpf", "enabled")
-	if _, err := os.Stat(marker); err != nil {
+	socket := filepath.Join(paths.AgentDir, "var", "ebpf", "otlp.sock")
+	if _, err := os.Stat(marker); err != nil && os.Getenv(envconfig.CWAgentEBPFEnabled) != "true" {
 		return nil
 	}
 	if _, err := os.Stat(cfg); err != nil {
-		log.Printf("W! eBPF is enabled (%s exists) but %s is missing: %v", marker, cfg, err)
+		log.Printf("W! eBPF is enabled but %s is missing: %v", cfg, err)
 		return nil
 	}
-	log.Printf("I! eBPF is enabled (%s exists): loading eBPF default config %s", marker, cfg)
+	if err := os.Remove(socket); err == nil {
+		log.Printf("I! Removed the eBPF socket %s left by a previous run", socket)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		log.Printf("W! Cannot remove the eBPF socket %s: %v", socket, err)
+	}
+	syscall.Umask(0o007)
+	log.Printf("I! eBPF is enabled: loading the eBPF receiving pipeline %s", cfg)
 	return []string{"-otelconfig", cfg}
 }
 
