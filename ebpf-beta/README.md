@@ -12,6 +12,7 @@ this branch alone:
 | `ebpf-beta/e2e/` | runtime test with restricted capabilities |
 | `ebpf-beta/binary/` | standalone tarball: the RPM's files + `install.sh` / `uninstall.sh` (no rpm needed) |
 | `ebpf-beta/image/Dockerfile` | official CloudWatch Agent image layout + `etc/ebpf/obi.yaml` |
+| `ebpf-beta/containers/` | EKS DaemonSet and ECS DAEMON task for that image (no add-on); see its README |
 | `ebpf-beta/configtest/` | the RPM eBPF config must validate with the agent's components |
 | `.github/workflows/ebpf-beta.yml` | CI: gates, e2e, RPM; manual release |
 
