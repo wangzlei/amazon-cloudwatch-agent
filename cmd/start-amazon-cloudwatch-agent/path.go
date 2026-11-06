@@ -94,6 +94,12 @@ func startAgent(writer io.WriteCloser) error {
 	return nil
 }
 
+// startedUnprivileged reports whether the launcher was started as a non-root
+// user: only by the eBPF systemd drop-in (User=cwagent).
+func startedUnprivileged() bool {
+	return os.Geteuid() != 0
+}
+
 // ebpfConfigArgs returns the -otelconfig pair for the default eBPF (ADOT OBI)
 // config shipped by the RPM in etc/ebpf/, but only when eBPF is opted in, i.e.
 // etc/ebpf/enabled exists. The marker is created by
@@ -115,6 +121,17 @@ func ebpfConfigArgs() []string {
 		log.Printf("W! eBPF is enabled (%s exists) but %s is missing: %v", marker, cfg, err)
 		return nil
 	}
+	if !envconfig.IsRunningInContainer() {
+		// The eBPF config decides what the privileged agent captures and where it
+		// sends it: only root may change it. The drop-in keeps etc/ root-owned;
+		// refuse a config the agent user (or anyone but root) could have written.
+		for _, p := range []string{filepath.Dir(filepath.Dir(cfg)), filepath.Dir(cfg), cfg, marker} {
+			if err := rootOwnedNotWritable(p); err != nil {
+				log.Printf("E! Not loading the eBPF config %s: %v", cfg, err)
+				return nil
+			}
+		}
+	}
 	log.Printf("I! eBPF is enabled (%s exists): loading eBPF default config %s", marker, cfg)
 	return []string{"-otelconfig", cfg}
 }
@@ -131,4 +148,27 @@ func getTOMLConfigMap() (map[string]any, error) {
 		return nil, err
 	}
 	return m, nil
+}
+
+// rootOwnedNotWritable returns an error unless p is owned by root and not
+// writable by its group or by others.
+func rootOwnedNotWritable(p string) error {
+	fi, err := os.Lstat(p)
+	if err != nil {
+		return err
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("%s: cannot read the owner", p)
+	}
+	if st.Uid != 0 {
+		return fmt.Errorf("%s is owned by uid %d, not root", p, st.Uid)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symlink", p)
+	}
+	if fi.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("%s is writable by group or others (mode %v)", p, fi.Mode().Perm())
+	}
+	return nil
 }

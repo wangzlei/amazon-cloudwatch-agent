@@ -51,3 +51,8 @@ func startAgent(writer io.WriteCloser) error {
 	}
 
 }
+
+// startedUnprivileged: the eBPF drop-in (User=cwagent) is Linux only.
+func startedUnprivileged() bool {
+	return false
+}

@@ -4,6 +4,7 @@
 # writable by the agent's cwagent user.
 #   - RPM: the template is owned by root:root with mode 0644
 #   - it is not under any directory the drop-in's ExecStartPre chowns to cwagent
+#   - etc/ (agent and eBPF config) is not chowned to cwagent (AppSec finding V2430163092)
 #   - tarball (if given): every payload entry is owned by 0:0, the template has mode 0644
 #   ebpf-beta/ci/check-package.sh <rpm> [<tarball>]
 set -euo pipefail
@@ -20,7 +21,9 @@ chowned=$(sed -n 's/^ExecStartPre=[-+@!:]*\/bin\/chown -R cwagent:cwagent //p' <
 [[ -n $chowned ]] || fail "no chown in the drop-in (check the pattern)"
 for d in $chowned; do
   [[ $T == "$d"/* ]] && fail "template $T is under $d, which the drop-in chowns to cwagent"
+  [[ $A/etc == "$d" || $A/etc == "$d"/* || $d == "$A/etc"/* ]] && fail "the drop-in chowns $d (config) to cwagent"
 done
+grep -q "^ExecStartPre=+$A/bin/start-amazon-cloudwatch-agent -translate-only\$" <<<"$dropin" || fail "the drop-in does not translate the config as root"
 
 if [[ -n $tarball ]]; then
   payload=$(tar -xzOf "$tarball" --wildcards '*/payload.tar.gz' | tar -tzv)
@@ -28,4 +31,4 @@ if [[ -n $tarball ]]; then
   [[ -z $bad ]] || fail "tarball entries not owned by 0/0: $bad"
   grep -qE "^-rw-r--r-- 0/0 .* ${T#/}\$" <<<"$payload" || fail "tarball template is not -rw-r--r-- 0/0"
 fi
-echo "ok: $T root:root 0644, not under chowned dirs ($(echo $chowned))${tarball:+; tarball payload owned by 0/0}"
+echo "ok: $T root:root 0644, etc/ not chowned, not under chowned dirs ($(echo $chowned))${tarball:+; tarball payload owned by 0/0}"

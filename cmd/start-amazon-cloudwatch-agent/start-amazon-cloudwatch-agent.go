@@ -65,8 +65,35 @@ func main() {
 		log.SetOutput(writer)
 	}
 
-	if err := translateConfig(); err != nil {
+	// "-translate-only": the eBPF systemd drop-in runs this as root
+	// (ExecStartPre=+) before the agent starts as the unprivileged cwagent user,
+	// so that the translated config is written by root and etc/ stays root-owned
+	// (cwagent can read it, not change it). The outputs of an earlier run are
+	// removed first: when there is no JSON config any more, the agent must not
+	// start with a stale TOML.
+	translateOnly := len(os.Args) > 1 && os.Args[1] == "-translate-only"
+	if translateOnly {
+		for _, p := range []string{paths.TomlConfigPath, paths.YamlConfigPath} {
+			if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				log.Fatalf("E! Cannot remove %s: %v \n", p, err)
+			}
+		}
+	}
+
+	if !translateOnly && !envconfig.IsRunningInContainer() && startedUnprivileged() {
+		// Started unprivileged: only by the eBPF drop-in, which already ran
+		// "-translate-only" as root. cwagent cannot write etc/.
+		if _, err := os.Stat(paths.TomlConfigPath); errors.Is(err, fs.ErrNotExist) {
+			log.Printf("I! No json config files found, please provide config, exit now\n")
+			os.Exit(0)
+		}
+		log.Printf("I! Running as uid %d: using the config translated by root %s \n", os.Geteuid(), paths.TomlConfigPath)
+	} else if err := translateConfig(); err != nil {
 		log.Fatalf("E! Cannot translate JSON, ERROR is %v \n", err)
+	}
+	if translateOnly {
+		log.Printf("I! Config has been translated into TOML %s (translate only) \n", paths.TomlConfigPath)
+		return
 	}
 	log.Printf("I! Config has been translated into TOML %s \n", paths.TomlConfigPath)
 	printFileContents(paths.TomlConfigPath)
