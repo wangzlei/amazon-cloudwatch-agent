@@ -14,11 +14,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+
+	"golang.org/x/sys/unix"
 
 	"go.opentelemetry.io/obi/pkg/appolly/app"
 	"go.opentelemetry.io/obi/pkg/appolly/app/svc"
@@ -66,53 +69,55 @@ func NewJavaInjector(cfg *obi.Config) (*JavaInjector, error) {
 	}, nil
 }
 
-func tempDirPath(root, dir string) (string, bool) {
-	if root == "" {
-		return "", false
-	}
+// tempDirs are the directories, inside the target's root, where the agent jar
+// is written, in order of preference. The target's own TMPDIR is deliberately
+// not used: it comes from the environment of the (untrusted) target process.
+var tempDirs = []string{"/tmp", "/var/tmp"}
 
-	cleanDir := filepath.Clean(dir)
-	if !filepath.IsAbs(cleanDir) {
-		return "", false
+// openDirInRoot opens the absolute directory dir inside root (/proc/<pid>/root)
+// and returns an O_PATH directory fd. openat2 with RESOLVE_IN_ROOT and
+// RESOLVE_NO_SYMLINKS refuses any symlink on the path and keeps ".." inside
+// root, so a file system controlled by the target process cannot redirect the
+// jar write to a host directory. Kernels without openat2 (< 5.6) get an error,
+// and the agent is not injected.
+func openDirInRoot(root, dir string) (int, error) {
+	if root == "" || !filepath.IsAbs(dir) {
+		return -1, fmt.Errorf("invalid directory %q in root %q", dir, root)
 	}
-
-	fullDir := filepath.Join(root, strings.TrimPrefix(cleanDir, "/"))
-	rel, err := filepath.Rel(root, fullDir)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", false
+	rootFD, err := unix.Open(root, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return -1, err
 	}
+	defer unix.Close(rootFD)
 
-	return fullDir, true
+	rel := strings.TrimPrefix(filepath.Clean(dir), "/")
+	if rel == "" {
+		rel = "."
+	}
+	return unix.Openat2(rootFD, rel, &unix.OpenHow{
+		Flags:   unix.O_PATH | unix.O_DIRECTORY | unix.O_CLOEXEC,
+		Resolve: unix.RESOLVE_IN_ROOT | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS,
+	})
 }
 
 func dirOK(root, dir string) bool {
-	fullDir, ok := tempDirPath(root, dir)
-	if !ok {
+	fd, err := openDirInRoot(root, dir)
+	if err != nil {
 		return false
 	}
-
-	info, err := os.Stat(fullDir)
-	return err == nil && info.IsDir()
+	unix.Close(fd)
+	return true
 }
 
-func (i *JavaInjector) findTempDir(root string, ie *ebpf.Instrumentable) (string, error) {
-	if tmpDir, ok := ie.FileInfo.ServiceAttrs().EnvVars["TMPDIR"]; ok {
-		if dirOK(root, tmpDir) {
-			return tmpDir, nil
+// findTempDir returns the first usable directory of tempDirs inside root, and an
+// O_PATH fd for it that the caller must close.
+func findTempDir(root string) (string, int, error) {
+	for _, dir := range tempDirs {
+		if fd, err := openDirInRoot(root, dir); err == nil {
+			return dir, fd, nil
 		}
 	}
-
-	tmpDir := "/tmp"
-	if dirOK(root, tmpDir) {
-		return tmpDir, nil
-	}
-
-	tmpDir = "/var/tmp"
-	if dirOK(root, tmpDir) {
-		return tmpDir, nil
-	}
-
-	return "", errors.New("couldn't find suitable temp directory for injection")
+	return "", -1, errors.New("couldn't find suitable temp directory for injection")
 }
 
 func (i *JavaInjector) nextAttachID() int64 {
@@ -241,55 +246,64 @@ func ensureEmbeddedAgent() error {
 // to be changed in tests
 var rootDirForPID func(app.PID) string = ebpfcommon.RootDirectoryForPID
 
+// copyAgent writes the embedded agent jar into a temp directory of the target's
+// root and returns its path as the target sees it. Every file operation is
+// relative to the directory fd from findTempDir (no path is resolved again): the
+// jar is created with O_EXCL|O_NOFOLLOW under a random name and renamed over
+// obi-java-agent.jar, which replaces a symlink there instead of following it.
 func (i *JavaInjector) copyAgent(ie *ebpf.Instrumentable) (string, error) {
 	root := rootDirForPID(ie.FileInfo.Pid())
-	tempDir, err := i.findTempDir(root, ie)
+	tempDir, dirFD, err := findTempDir(root)
 	if err != nil {
 		return "", fmt.Errorf("error accessing temp directory: %w", err)
 	}
+	defer unix.Close(dirFD)
 
-	fullTempDir, ok := tempDirPath(root, tempDir)
-	if !ok {
-		return "", fmt.Errorf("invalid temp directory for injection: %q", tempDir)
+	i.log.Info("found injection directory for process", "pid", ie.FileInfo.Pid(), "path", filepath.Join(root, tempDir))
+
+	var (
+		f       *os.File
+		tmpName string
+	)
+	for attempt := 0; f == nil; attempt++ {
+		tmpName = fmt.Sprintf("%s.tmp-%016x", ObiJavaAgentFileName, rand.Uint64())
+		fd, err := unix.Openat(dirFD, tmpName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o644)
+		if errors.Is(err, unix.EEXIST) && attempt < 10 {
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("unable to create target OBI java agent: %w", err)
+		}
+		f = os.NewFile(uintptr(fd), tmpName)
 	}
-
-	i.log.Info("found injection directory for process", "pid", ie.FileInfo.Pid(), "path", fullTempDir)
-
-	agentPathHost := filepath.Join(fullTempDir, ObiJavaAgentFileName)
-
-	source := bytes.NewReader(embeddedJavaAgentBytes)
-	target, err := os.CreateTemp(fullTempDir, ObiJavaAgentFileName+".tmp-*")
-	if err != nil {
-		return "", fmt.Errorf("unable to create target OBI java agent: %w", err)
-	}
-	tmpTargetPath := target.Name()
 	cleanup := true
 	defer func() {
 		if cleanup {
-			_ = os.Remove(tmpTargetPath)
+			_ = unix.Unlinkat(dirFD, tmpName, 0)
 		}
 	}()
 
-	if _, err = target.ReadFrom(source); err != nil {
+	if _, err = f.ReadFrom(bytes.NewReader(embeddedJavaAgentBytes)); err != nil {
+		f.Close()
 		return "", fmt.Errorf("error writing java agent to target location: %w", err)
 	}
 
-	if err = target.Chmod(0o644); err != nil {
+	// the umask may have removed bits from the mode given to openat
+	if err = f.Chmod(0o644); err != nil {
+		f.Close()
 		return "", fmt.Errorf("error setting permissions on target OBI java agent: %w", err)
 	}
 
-	if err = target.Close(); err != nil {
+	if err = f.Close(); err != nil {
 		return "", fmt.Errorf("error closing target OBI java agent: %w", err)
 	}
 
-	if err = os.Rename(tmpTargetPath, agentPathHost); err != nil {
+	if err = unix.Renameat(dirFD, tmpName, dirFD, ObiJavaAgentFileName); err != nil {
 		return "", fmt.Errorf("unable to move target OBI java agent into place: %w", err)
 	}
 	cleanup = false
 
-	agentPathContainer := filepath.Join(tempDir, ObiJavaAgentFileName)
-
-	return agentPathContainer, nil
+	return filepath.Join(tempDir, ObiJavaAgentFileName), nil
 }
 
 func returnCodeLine(line string) (bool, error) {

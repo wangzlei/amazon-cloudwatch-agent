@@ -14,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 
 	"go.opentelemetry.io/obi/pkg/appolly/app"
 	"go.opentelemetry.io/obi/pkg/appolly/app/svc"
@@ -86,22 +87,6 @@ func TestJavaInjector_CopyAgent(t *testing.T) {
 				return tmpDir
 			},
 			envVars:     map[string]string{},
-			pid:         1000,
-			expectError: false,
-			verifyFile:  true,
-		},
-		{
-			name: "successful copy to TMPDIR from env",
-			setupTempDir: func(t *testing.T, _ app.PID) string {
-				tmpDir := t.TempDir()
-				procRoot := filepath.Join(tmpDir, "proc", "root")
-				customTmpDir := filepath.Join(procRoot, "custom", "tmp")
-				require.NoError(t, os.MkdirAll(customTmpDir, 0o755))
-				return tmpDir
-			},
-			envVars: map[string]string{
-				"TMPDIR": "/custom/tmp",
-			},
 			pid:         1000,
 			expectError: false,
 			verifyFile:  true,
@@ -277,33 +262,19 @@ func TestJavaInjector_CopyAgent(t *testing.T) {
 	}
 }
 
-func TestJavaInjector_FindTempDir(t *testing.T) {
+func TestFindTempDir(t *testing.T) {
 	tests := []struct {
 		name        string
 		setupDirs   func(t *testing.T, root string)
-		envVars     map[string]string
 		expectError bool
 		expectedDir string
 	}{
 		{
-			name: "prefer TMPDIR from env",
+			name: "/tmp",
 			setupDirs: func(t *testing.T, root string) {
 				require.NoError(t, os.MkdirAll(filepath.Join(root, "custom", "tmp"), 0o755))
 				require.NoError(t, os.MkdirAll(filepath.Join(root, "tmp"), 0o755))
 			},
-			envVars: map[string]string{
-				"TMPDIR": "/custom/tmp",
-			},
-			expectError: false,
-			expectedDir: "/custom/tmp",
-		},
-		{
-			name: "fallback to /tmp",
-			setupDirs: func(t *testing.T, root string) {
-				require.NoError(t, os.MkdirAll(filepath.Join(root, "tmp"), 0o755))
-			},
-			envVars:     map[string]string{},
-			expectError: false,
 			expectedDir: "/tmp",
 		},
 		{
@@ -311,50 +282,31 @@ func TestJavaInjector_FindTempDir(t *testing.T) {
 			setupDirs: func(t *testing.T, root string) {
 				require.NoError(t, os.MkdirAll(filepath.Join(root, "var", "tmp"), 0o755))
 			},
-			envVars:     map[string]string{},
-			expectError: false,
 			expectedDir: "/var/tmp",
+		},
+		{
+			name: "symlinked /tmp is not used",
+			setupDirs: func(t *testing.T, root string) {
+				require.NoError(t, os.MkdirAll(filepath.Join(root, "real"), 0o755))
+				require.NoError(t, os.Symlink("/real", filepath.Join(root, "tmp")))
+				require.NoError(t, os.MkdirAll(filepath.Join(root, "var", "tmp"), 0o755))
+			},
+			expectedDir: "/var/tmp",
+		},
+		{
+			name: "symlink on the /var/tmp path is not used",
+			setupDirs: func(t *testing.T, root string) {
+				require.NoError(t, os.MkdirAll(filepath.Join(root, "real", "tmp"), 0o755))
+				require.NoError(t, os.Symlink("real", filepath.Join(root, "var")))
+			},
+			expectError: true,
 		},
 		{
 			name: "error when no temp dir available",
 			setupDirs: func(t *testing.T, root string) {
 				require.NoError(t, os.MkdirAll(root, 0o755))
 			},
-			envVars:     map[string]string{},
 			expectError: true,
-		},
-		{
-			name: "ignore invalid TMPDIR from env",
-			setupDirs: func(t *testing.T, root string) {
-				require.NoError(t, os.MkdirAll(filepath.Join(root, "tmp"), 0o755))
-			},
-			envVars: map[string]string{
-				"TMPDIR": "/nonexistent",
-			},
-			expectError: false,
-			expectedDir: "/tmp",
-		},
-		{
-			name: "ignore escaping TMPDIR from env",
-			setupDirs: func(t *testing.T, root string) {
-				require.NoError(t, os.MkdirAll(filepath.Join(root, "tmp"), 0o755))
-			},
-			envVars: map[string]string{
-				"TMPDIR": "/proc/1/root/etc",
-			},
-			expectError: false,
-			expectedDir: "/tmp",
-		},
-		{
-			name: "ignore relative TMPDIR from env",
-			setupDirs: func(t *testing.T, root string) {
-				require.NoError(t, os.MkdirAll(filepath.Join(root, "tmp"), 0o755))
-			},
-			envVars: map[string]string{
-				"TMPDIR": "../../../etc",
-			},
-			expectError: false,
-			expectedDir: "/tmp",
 		},
 	}
 
@@ -363,27 +315,115 @@ func TestJavaInjector_FindTempDir(t *testing.T) {
 			root := t.TempDir()
 			tt.setupDirs(t, root)
 
-			injector := &JavaInjector{
-				cfg: &obi.Config{},
-			}
-
-			ie := &ebpf.Instrumentable{
-				FileInfo: exec.New(exec.Init{
-					Service: svc.Attrs{
-						EnvVars: tt.envVars,
-					},
-				}),
-			}
-
-			tmpDir, err := injector.findTempDir(root, ie)
+			tmpDir, fd, err := findTempDir(root)
 
 			if tt.expectError {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), "couldn't find suitable temp directory")
 			} else {
 				require.NoError(t, err)
+				unix.Close(fd)
 				assert.Equal(t, tt.expectedDir, tmpDir)
 			}
+		})
+	}
+}
+
+// The target's file system must not be able to redirect the jar write outside
+// its root (to the host), and the target's TMPDIR must not be used.
+func TestJavaInjector_CopyAgentStaysInRoot(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T, root, host string)
+		envVars map[string]string
+		wantErr bool
+		wantDir string // directory, inside root, that must hold the jar
+	}{
+		{
+			name: "absolute /tmp symlink to a host directory",
+			setup: func(t *testing.T, root, host string) {
+				require.NoError(t, os.Symlink(host, filepath.Join(root, "tmp")))
+			},
+			wantErr: true,
+		},
+		{
+			name: "relative /tmp symlink escaping the root",
+			setup: func(t *testing.T, root, host string) {
+				rel, err := filepath.Rel(root, host)
+				require.NoError(t, err)
+				require.NoError(t, os.Symlink(rel, filepath.Join(root, "tmp")))
+				require.NoError(t, os.MkdirAll(filepath.Join(root, "var", "tmp"), 0o755))
+			},
+			wantDir: "var/tmp",
+		},
+		{
+			name: "TMPDIR of the target is ignored",
+			setup: func(t *testing.T, root, _ string) {
+				require.NoError(t, os.MkdirAll(filepath.Join(root, "custom"), 0o755))
+				require.NoError(t, os.MkdirAll(filepath.Join(root, "tmp"), 0o755))
+			},
+			envVars: map[string]string{"TMPDIR": "/custom"},
+			wantDir: "tmp",
+		},
+		{
+			name: "existing jar symlink to a host file is replaced, not followed",
+			setup: func(t *testing.T, root, host string) {
+				require.NoError(t, os.MkdirAll(filepath.Join(root, "tmp"), 0o755))
+				require.NoError(t, os.Symlink(filepath.Join(host, ObiJavaAgentFileName), filepath.Join(root, "tmp", ObiJavaAgentFileName)))
+			},
+			wantDir: "tmp",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := t.TempDir()
+			root := filepath.Join(base, "root")
+			host := filepath.Join(base, "host")
+			require.NoError(t, os.MkdirAll(root, 0o755))
+			require.NoError(t, os.MkdirAll(host, 0o755))
+			victim := filepath.Join(host, ObiJavaAgentFileName)
+			require.NoError(t, os.WriteFile(victim, []byte("do not overwrite"), 0o644))
+			tt.setup(t, root, host)
+
+			originalRootFunc := rootDirForPID
+			defer func() { rootDirForPID = originalRootFunc }()
+			rootDirForPID = func(_ app.PID) string { return root }
+
+			injector := &JavaInjector{cfg: &obi.DefaultConfig, log: slog.With("component", "javaagent.Injector")}
+			ie := &ebpf.Instrumentable{
+				FileInfo: exec.New(exec.Init{Pid: 1000, Service: svc.Attrs{EnvVars: tt.envVars}}),
+				Type:     svc.InstrumentableJava,
+			}
+
+			path, err := injector.copyAgent(ie)
+
+			// the host directory is never written
+			entries, rerr := os.ReadDir(host)
+			require.NoError(t, rerr)
+			assert.Len(t, entries, 1)
+			content, rerr := os.ReadFile(victim)
+			require.NoError(t, rerr)
+			assert.Equal(t, []byte("do not overwrite"), content)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, "/"+tt.wantDir+"/"+ObiJavaAgentFileName, path)
+			jar := filepath.Join(root, tt.wantDir, ObiJavaAgentFileName)
+			info, lerr := os.Lstat(jar)
+			require.NoError(t, lerr)
+			assert.True(t, info.Mode().IsRegular())
+			assert.Equal(t, os.FileMode(0o644), info.Mode().Perm())
+			copied, rerr := os.ReadFile(jar)
+			require.NoError(t, rerr)
+			assert.Equal(t, embeddedJavaAgentBytes, copied)
+			// no temp file is left behind
+			left, rerr := os.ReadDir(filepath.Dir(jar))
+			require.NoError(t, rerr)
+			assert.Len(t, left, 1)
 		})
 	}
 }
