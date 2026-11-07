@@ -259,7 +259,8 @@ func HostFromSchemeHost(span *Span) string {
 }
 
 func HTTPClientHost(span *Span) string {
-	if host := HostFromSchemeHost(span); host != "" {
+	// the Host the application sent: used only if it is a plausible host[:port]
+	if host := HostFromSchemeHost(span); host != "" && validHostPort(host) {
 		return host
 	}
 

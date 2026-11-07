@@ -69,6 +69,18 @@ To turn it off (Java HTTPS is then not measured; plain HTTP still is), set
 `javaagent: {enabled: false}` under `receivers: obi/cwagent_ebpf:` and run `enable-ebpf` again:
 `CAP_SETUID`, `CAP_SETGID`, `CAP_SYS_CHROOT` and `CAP_KILL` are then no longer granted.
 
+## Metric cardinality
+
+Some metric attributes come from request data: on HTTP server metrics, `peer.service.name` is the
+`X-Forwarded-Host` (else `Host`) the client sent (the name the service was called by, which joins
+the topology through load balancers); on HTTP client metrics, `server.address` and the AWS
+resource attributes (`aws.s3.bucket`, `aws.sqs.queue.url`, `aws.lambda.function.arn`). A value
+that is not a plausible host name / AWS resource is dropped, and per service only the first 50
+`peer.service.name` values (100 per AWS attribute) are kept; further values are reported as
+`_other`. In addition, the drop-in sets `OTEL_GO_X_CARDINALITY_LIMIT=2000`: at most 2000
+attribute sets per service and metric, the rest aggregated into one series with
+`otel.metric.overflow=true`.
+
 ## Image
 
 `ebpf-beta/ci/run.sh image` builds the image (linux/amd64 into the local docker, smoke-tested);

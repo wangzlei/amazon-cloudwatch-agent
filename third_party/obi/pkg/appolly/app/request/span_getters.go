@@ -81,8 +81,9 @@ func spanOTELGetters(name attr.Name) (attributes.Getter[*Span, attribute.KeyValu
 		getter = func(s *Span) attribute.KeyValue {
 			name := s.PeerServiceName
 			if s.Type == EventTypeHTTP {
-				// Server side: the front-door name the request was addressed to.
-				name = ForwardedHostName(s.ForwardedHost)
+				// Server side: the front-door name the request was addressed to,
+				// validated and bounded per service (client-controlled header).
+				name = serverPeerServiceName(s)
 			}
 			if name == "" {
 				return attribute.KeyValue{}
@@ -407,7 +408,10 @@ func spanOTELGetters(name attr.Name) (attributes.Getter[*Span, attribute.KeyValu
 		// plain HTTP client metrics get no empty label.
 		getter = func(s *Span) attribute.KeyValue {
 			if s.Type == EventTypeHTTPClient && s.SubType == HTTPSubtypeAWSS3 && s.AWS != nil && s.AWS.S3.Bucket != "" {
-				return AWSS3Bucket(s.AWS.S3.Bucket)
+				if v := boundedAWSValue(s, "aws.s3.bucket", s.AWS.S3.Bucket); v != "" {
+					return AWSS3Bucket(v)
+				}
+				return attribute.KeyValue{}
 			}
 			return attribute.KeyValue{}
 		}
@@ -421,28 +425,40 @@ func spanOTELGetters(name attr.Name) (attributes.Getter[*Span, attribute.KeyValu
 	case attr.AWSSQSQueueURL:
 		getter = func(s *Span) attribute.KeyValue {
 			if s.Type == EventTypeHTTPClient && s.SubType == HTTPSubtypeAWSSQS && s.AWS != nil && s.AWS.SQS.QueueURL != "" {
-				return AWSSQSQueueURL(s.AWS.SQS.QueueURL)
+				if v := boundedAWSValue(s, "aws.sqs.queue.url", s.AWS.SQS.QueueURL); v != "" {
+					return AWSSQSQueueURL(v)
+				}
+				return attribute.KeyValue{}
 			}
 			return attribute.KeyValue{}
 		}
 	case attr.AWSLambdaFunctionARN:
 		getter = func(s *Span) attribute.KeyValue {
 			if s.Type == EventTypeHTTPClient && s.SubType == HTTPSubtypeAWSLambda && s.AWS != nil && s.AWS.Lambda.FunctionARN != "" {
-				return AWSLambdaFunctionARN(s.AWS.Lambda.FunctionARN)
+				if v := boundedAWSValue(s, "aws.lambda.function.arn", s.AWS.Lambda.FunctionARN); v != "" {
+					return AWSLambdaFunctionARN(v)
+				}
+				return attribute.KeyValue{}
 			}
 			return attribute.KeyValue{}
 		}
 	case attr.FaaSInvokedName:
 		getter = func(s *Span) attribute.KeyValue {
 			if s.Type == EventTypeHTTPClient && s.SubType == HTTPSubtypeAWSLambda && s.AWS != nil && s.AWS.Lambda.FunctionName != "" {
-				return semconv.FaaSInvokedName(s.AWS.Lambda.FunctionName)
+				if v := boundedAWSValue(s, "faas.invoked_name", s.AWS.Lambda.FunctionName); v != "" {
+					return semconv.FaaSInvokedName(v)
+				}
+				return attribute.KeyValue{}
 			}
 			return attribute.KeyValue{}
 		}
 	case attr.FaaSInvokedRegion:
 		getter = func(s *Span) attribute.KeyValue {
 			if s.Type == EventTypeHTTPClient && s.SubType == HTTPSubtypeAWSLambda && s.AWS != nil && s.AWS.Lambda.FunctionRegion != "" {
-				return semconv.FaaSInvokedRegion(s.AWS.Lambda.FunctionRegion)
+				if v := boundedAWSValue(s, "faas.invoked_region", s.AWS.Lambda.FunctionRegion); v != "" {
+					return semconv.FaaSInvokedRegion(v)
+				}
+				return attribute.KeyValue{}
 			}
 			return attribute.KeyValue{}
 		}
