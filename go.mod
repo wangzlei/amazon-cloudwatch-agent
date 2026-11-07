@@ -719,7 +719,7 @@ require (
 
 require (
 	github.com/AlessandroPomponio/go-gibberish v0.0.0-20191004143433-a2d4156f0396 // indirect
-	github.com/andybalholm/brotli v1.0.5 // indirect
+	github.com/andybalholm/brotli v1.2.7 // indirect
 	github.com/caarlos0/env/v11 v11.4.1 // indirect
 	github.com/cilium/ebpf v0.22.0 // indirect
 	github.com/grafana/go-offsets-tracker v0.1.7 // indirect
