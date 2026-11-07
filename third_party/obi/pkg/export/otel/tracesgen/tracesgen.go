@@ -562,8 +562,10 @@ func traceAttributesSelectorInternal(span *request.Span, optionalAttrs map[attr.
 			attrs = append(attrs, semconv.HTTPRoute(span.Route))
 		}
 		// EXPERIMENTAL — X-Forwarded-Host (or Host) of the incoming request.
-		if span.ForwardedHost != "" {
-			attrs = append(attrs, attribute.String(string(attr.XForwardedHost), span.ForwardedHost))
+		// Validated like peer.service.name (client-sent header): dropped if it is
+		// not a plausible host[:port].
+		if fh := request.ForwardedHostName(span.ForwardedHost); fh != "" {
+			attrs = append(attrs, attribute.String(string(attr.XForwardedHost), fh))
 		}
 		if span.SubType == request.HTTPSubtypeGraphQL && span.GraphQL != nil {
 			if _, ok := optionalAttrs[attr.GraphQLDocument]; ok {
