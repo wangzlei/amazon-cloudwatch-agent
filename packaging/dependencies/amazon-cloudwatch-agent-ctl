@@ -40,7 +40,7 @@ UsageString="
 
 
         usage:  amazon-cloudwatch-agent-ctl -a
-                stop|start|status|status-with-workloads|fetch-config|append-config|remove-config|set-log-level|set-env|enable-ebpf|disable-ebpf
+                stop|start|status|status-with-workloads|fetch-config|append-config|remove-config|set-log-level|set-env|enable-ebpf|disable-ebpf|install-ebpf-dropin
                 [-m ec2|onPremise|onPrem|auto]
                 [-c default|all|ssm:<parameter-store-name>|file:<file-path>]
                 [-s]
@@ -208,6 +208,38 @@ ebpf_status() {
      fi
 }
 
+# Writes the systemd drop-in from the root-owned template, with only the
+# capabilities that etc/ebpf/obi.yaml (and any YAML in amazon-cloudwatch-agent.d)
+# needs: RED always; topology when ebpf.context_propagation is not disabled;
+# Java / Node.js injection when javaagent / nodejs is enabled. Run it again
+# (or enable-ebpf) after changing those settings. Without the template's
+# capability lines replaced, every capability of the template is granted.
+install_ebpf_dropin() {
+     if [ ! -f "${EBPF_DROPIN_TEMPLATE}" ]; then
+          echo "eBPF systemd drop-in template ${EBPF_DROPIN_TEMPLATE} not found" >&2
+          exit 1
+     fi
+     caps=$("${AGENTDIR}/bin/start-amazon-cloudwatch-agent" -ebpf-caps) || caps=""
+     case "${caps}" in
+          *[!A-Z_\ ]*|"") caps="" ;;
+     esac
+     mkdir -p "${EBPF_DROPIN_DIR}"
+     tmp="${EBPF_DROPIN}.tmp.$$"
+     if [ -n "${caps}" ]; then
+          sed -e "s/^AmbientCapabilities=.*/AmbientCapabilities=${caps}/" \
+              -e "s/^CapabilityBoundingSet=.*/CapabilityBoundingSet=${caps}/" \
+              "${EBPF_DROPIN_TEMPLATE}" > "${tmp}"
+     else
+          cp -f "${EBPF_DROPIN_TEMPLATE}" "${tmp}"
+     fi
+     chmod 0644 "${tmp}"
+     mv -f "${tmp}" "${EBPF_DROPIN}"
+     if [ "${SYSTEMD}" = 'true' ]; then
+          systemctl daemon-reload
+     fi
+     echo "eBPF capabilities: $(sed -n 's/^AmbientCapabilities=//p' "${EBPF_DROPIN}")"
+}
+
 enable_ebpf() {
      mode="${1:-}"
 
@@ -219,10 +251,9 @@ enable_ebpf() {
           echo "eBPF systemd drop-in template ${EBPF_DROPIN_TEMPLATE} not found" >&2
           exit 1
      fi
-     mkdir -p "${EBPF_DIR}" "${EBPF_DROPIN_DIR}"
+     mkdir -p "${EBPF_DIR}"
      touch "${EBPF_MARKER}"
-     cp -f "${EBPF_DROPIN_TEMPLATE}" "${EBPF_DROPIN}"
-     systemctl daemon-reload
+     install_ebpf_dropin
      echo "eBPF enabled"
 
      if [ "$(runstatus ${CWA_NAME})" = 'running' ]; then
@@ -542,6 +573,7 @@ main() {
      set-env) set_env "${env_kv}" ;;
      enable-ebpf) enable_ebpf "${mode}" ;;
      disable-ebpf) disable_ebpf ;;
+     install-ebpf-dropin) [ -f "${EBPF_MARKER}" ] && install_ebpf_dropin ;;
      *)
           echo "Invalid action: ${action} ${UsageString}" >&2
           exit 1

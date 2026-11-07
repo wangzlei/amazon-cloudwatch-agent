@@ -34,9 +34,12 @@ done
 tar -C / -xzf "$here/payload.tar.gz" --no-same-owner --no-overwrite-dir "$@"
 
 # %posttrans: eBPF opted in, reinstall the drop-in from the root-owned template.
+# Capabilities for the features etc/ebpf/obi.yaml enables (see the ctl).
 if [ -f "$A/etc/ebpf/enabled" ]; then
-    mkdir -p /etc/systemd/system/amazon-cloudwatch-agent.service.d
-    cp -f "$A/share/ebpf/systemd-dropin.conf" /etc/systemd/system/amazon-cloudwatch-agent.service.d/ebpf.conf
+    "$CTL" -a install-ebpf-dropin >/dev/null || {
+        mkdir -p /etc/systemd/system/amazon-cloudwatch-agent.service.d
+        cp -f "$A/share/ebpf/systemd-dropin.conf" /etc/systemd/system/amazon-cloudwatch-agent.service.d/ebpf.conf
+    }
 fi
 if [ -d /run/systemd/system ]; then systemctl daemon-reload; fi
 if $upgrade; then "$CTL" -a cond-restart || :; fi

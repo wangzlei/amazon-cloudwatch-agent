@@ -51,6 +51,13 @@ func translateConfig() error {
 }
 
 func main() {
+	// "-ebpf-caps": print the capabilities the eBPF config needs (for the
+	// systemd drop-in written by amazon-cloudwatch-agent-ctl) and exit.
+	if len(os.Args) > 1 && os.Args[1] == "-ebpf-caps" {
+		printEBPFCaps()
+		return
+	}
+
 	var writer io.WriteCloser
 
 	if !envconfig.IsRunningInContainer() {

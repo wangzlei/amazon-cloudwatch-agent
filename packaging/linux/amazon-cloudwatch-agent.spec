@@ -127,11 +127,14 @@ fi
 # eBPF opted in: (re)install the systemd drop-in from the template. On an upgrade
 # from an always-on version the old package's erase removed its ebpf.conf.
 if [ -f /opt/aws/amazon-cloudwatch-agent/etc/ebpf/enabled ] && [ -f /opt/aws/amazon-cloudwatch-agent/share/ebpf/systemd-dropin.conf ]; then
-    mkdir -p /etc/systemd/system/amazon-cloudwatch-agent.service.d
-    cp -f /opt/aws/amazon-cloudwatch-agent/share/ebpf/systemd-dropin.conf /etc/systemd/system/amazon-cloudwatch-agent.service.d/ebpf.conf
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl daemon-reload >/dev/null 2>&1 || :
-    fi
+    # capabilities for the features etc/ebpf/obi.yaml enables (see the ctl)
+    /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a install-ebpf-dropin >/dev/null 2>&1 || {
+        mkdir -p /etc/systemd/system/amazon-cloudwatch-agent.service.d
+        cp -f /opt/aws/amazon-cloudwatch-agent/share/ebpf/systemd-dropin.conf /etc/systemd/system/amazon-cloudwatch-agent.service.d/ebpf.conf
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl daemon-reload >/dev/null 2>&1 || :
+        fi
+    }
 fi
 # restart agent after upgrade
 if [ -x /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl ]; then

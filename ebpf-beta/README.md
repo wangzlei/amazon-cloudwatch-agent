@@ -45,6 +45,30 @@ sudo ./uninstall.sh
 The capabilities come only from the systemd drop-in, as with the RPM. Do not grant them with
 `setcap` (every user who can run the file would get them) or run the agent as root.
 
+## Capabilities and Java agent injection
+
+`enable-ebpf` runs the agent as the unprivileged `cwagent` user and grants, through the systemd
+drop-in, only the capabilities of the features `etc/ebpf/obi.yaml` enables:
+
+| Feature (setting in `obi.yaml`) | Default | Capabilities |
+|---|---|---|
+| RED metrics | always | `CAP_BPF CAP_PERFMON CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_CHECKPOINT_RESTORE CAP_NET_RAW` |
+| Topology, `peer.service.name` (`ebpf.context_propagation`) | `tcp_service_name` | `+ CAP_NET_ADMIN CAP_SYS_ADMIN` |
+| Java agent injection (`javaagent.enabled`) | `true` | `+ CAP_SYS_ADMIN CAP_KILL CAP_SYS_CHROOT CAP_SETUID CAP_SETGID` |
+| Node.js injection (`nodejs.enabled`) | `false` | `+ CAP_KILL` |
+
+After changing these settings, run `sudo amazon-cloudwatch-agent-ctl -a enable-ebpf` again: it
+rewrites the drop-in with the matching capabilities and restarts the agent.
+
+**Java agent injection loads an agent into your JVMs.** For HTTPS in Java (JSSE does not use
+OpenSSL, so eBPF cannot see the plaintext), the agent copies a small Java agent jar into the
+JVM's own `/tmp` (or `/var/tmp`) and loads it through the JVM attach API, into every JVM it
+instruments, also JVMs owned by other users or root, and JVMs in containers. The attach runs on
+one dedicated thread of the agent, which switches to the JVM owner's uid/gid only for the attach.
+To turn it off (Java HTTPS is then not measured; plain HTTP still is), set
+`javaagent: {enabled: false}` under `receivers: obi/cwagent_ebpf:` and run `enable-ebpf` again:
+`CAP_SETUID`, `CAP_SETGID`, `CAP_SYS_CHROOT` and `CAP_KILL` are then no longer granted.
+
 ## Image
 
 `ebpf-beta/ci/run.sh image` builds the image (linux/amd64 into the local docker, smoke-tested);
