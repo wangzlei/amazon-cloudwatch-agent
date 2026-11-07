@@ -22,13 +22,14 @@ func main() {
 
 	err := cmdwrapper.ExecuteSubcommand(flags.TranslatorCommand, translatorFlags)
 	if err != nil {
-		fmt.Println(err.Error())
 		// Pass "no JSON config" through: start-amazon-cloudwatch-agent then
 		// exits 0 instead of failing (and systemd restarting it in a loop).
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == constants.ExitCodeNoJSONFile {
+			fmt.Println("I! config-translator: no json config files found")
 			os.Exit(constants.ExitCodeNoJSONFile)
 		}
+		fmt.Println(err.Error())
 		os.Exit(1)
 	}
 }
