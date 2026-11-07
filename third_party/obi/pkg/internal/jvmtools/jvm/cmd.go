@@ -17,6 +17,8 @@ import (
 	"sync"
 	"syscall"
 
+	"golang.org/x/sys/unix"
+
 	"go.opentelemetry.io/obi/pkg/internal/jvmtools/util"
 )
 
@@ -24,9 +26,30 @@ import (
 var (
 	getEUID = syscall.Geteuid
 	getEGID = syscall.Getegid
-	setEUID = syscall.Seteuid
-	setEGID = syscall.Setegid
+	setEUID = setThreadEUID
+	setEGID = setThreadEGID
 )
+
+// setThreadEUID / setThreadEGID change the effective uid/gid of the CALLING
+// THREAD only (raw setresuid/setresgid; -1 keeps the real and saved ids).
+// syscall.Seteuid/Setegid would change them for every thread of the process,
+// so while attaching to a JVM owned by another user (e.g. root) the whole OBI
+// process would run as that user. Attach calls them on its dedicated thread,
+// which is locked and destroyed afterwards, so the switch never needs to be
+// undone and never leaks to other goroutines.
+func setThreadEUID(euid int) error {
+	if _, _, errno := unix.RawSyscall(unix.SYS_SETRESUID, ^uintptr(0), uintptr(euid), ^uintptr(0)); errno != 0 {
+		return errno
+	}
+	return nil
+}
+
+func setThreadEGID(egid int) error {
+	if _, _, errno := unix.RawSyscall(unix.SYS_SETRESGID, ^uintptr(0), uintptr(egid), ^uintptr(0)); errno != 0 {
+		return errno
+	}
+	return nil
+}
 
 var errTerminated = errors.New("attach terminated")
 
@@ -88,11 +111,10 @@ func (j *JAttacher) Init() {
 
 func (j *JAttacher) restoreCredentialsLocked() error {
 	var restoreErr error
-	// Credentials (euid/egid) are switched process-wide during Attach, so they
-	// must be restored here. Namespaces are NOT restored: the namespace switch
-	// happens only on the dedicated sacrificial thread spawned by Attach, which
-	// is destroyed once attach completes — the runtime's pool threads never
-	// leave their original namespaces, so there is nothing to roll back.
+	// Credentials (euid/egid) and namespaces are switched only on the
+	// dedicated sacrificial thread spawned by Attach, which is destroyed once
+	// attach completes, so nothing needs to be rolled back. Setting the ids
+	// back here is a no-op kept for safety: it only affects the calling thread.
 	if err := setEUID(j.myUID); err != nil {
 		restoreErr = errors.Join(restoreErr, err)
 	}
@@ -224,7 +246,7 @@ func (j *JAttacher) attachInNamespace(ctx context.Context, pid, nspid, targetUID
 	}
 
 	// In HotSpot, dynamic attach is allowed only for the clients with the same euid/egid.
-	// If we are running under root, switch to the required euid/egid automatically.
+	// Switch this thread (only) to the required euid/egid (needs CAP_SETUID/CAP_SETGID).
 	// We must use j.setEGID and j.setEUID instead of setEUID and setEGID to ensure OBI
 	// is still waiting on the attach, rather than changing the user credentials after OBI
 	// has abandoned this attach in the pipeline.
