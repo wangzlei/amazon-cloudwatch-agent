@@ -91,7 +91,8 @@ func main() {
 		// Started unprivileged: only by the eBPF drop-in, which already ran
 		// "-translate-only" as root. cwagent cannot write etc/.
 		if _, err := os.Stat(paths.TomlConfigPath); errors.Is(err, fs.ErrNotExist) {
-			log.Printf("I! No json config files found, please provide config, exit now\n")
+			// the root translation step already logged "No json config files found"
+			log.Printf("I! No translated config %s, nothing to run, exit now\n", paths.TomlConfigPath)
 			os.Exit(0)
 		}
 		log.Printf("I! Running as uid %d: using the config translated by root %s \n", os.Geteuid(), paths.TomlConfigPath)

@@ -105,6 +105,10 @@ receivers:
     # (re-run "amazon-cloudwatch-agent-ctl -a enable-ebpf" after changing it).
     javaagent:
       enabled: true
+      # The Java agent's start-up (re-instrumenting loaded classes) can take more
+      # than OBI's default 10s on small hosts or when JVMs start together; the
+      # attach then succeeds but OBI logs "java attach timed out".
+      attach_timeout: 30s
 
 extensions:
   sigv4auth/cwagent_ebpf_monitoring:
