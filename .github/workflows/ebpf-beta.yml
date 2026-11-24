@@ -100,7 +100,7 @@ jobs:
       - name: rpm
         env: { VERSION: "${{ steps.v.outputs.version }}" }
         run: |
-          command -v rpmbuild || sudo apt-get install -y rpm
+          rpmbuild --version || sudo apt-get install -y rpm
           ebpf-beta/ci/run.sh rpm
       - name: Collect RPMs and tarballs
         env: { VERSION: "${{ steps.v.outputs.version }}" }

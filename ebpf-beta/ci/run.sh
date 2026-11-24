@@ -13,7 +13,8 @@
 #          CAP_NET_ADMIN/CAP_SYS_ADMIN (scenario nonetadmin); asserts RED metrics, spans
 #          and peer.service.name from the debug exporter output, and that a secret sent in the
 #          query string, headers and response body never appears in the agent's output
-#   rpm    make package-rpm (amd64 + arm64), checks the version and the etc/ebpf payload,
+#   rpm    make package-rpm (amd64 + arm64), checks the version, the v4 package format and the
+#          etc/ebpf payload,
 #          builds the standalone tarball (ebpf-beta/binary) from each RPM, and checks that the
 #          drop-in template is root-owned and outside the chowned dirs (ci/check-package.sh)
 #   image  official-layout image (ebpf-beta/image/Dockerfile): builds linux/amd64 into the
@@ -79,8 +80,9 @@ if want rpm; then : > "$LOGS/rpm.log"; RESULT[rpm]=PASS
   run rpm bash -c "rm -rf '$BS/private' && mkdir -p '$BS/bin' && make package-rpm BUILD_SPACE='$BS' VERSION='$VERSION' EBPF_OCI_BIN='${EBPF_OCI_BIN:-docker}'"
   for a in amd64 arm64; do
     run rpm bash -c "f='$BS/bin/linux/$a/amazon-cloudwatch-agent.rpm'; v=\$(rpm -qp --qf '%{VERSION}' \"\$f\"); [ \"\$v\" = '$RPM_VERSION' ] || { echo \"\$f: version \$v, expected $RPM_VERSION\"; exit 1; }
+      m=\$(od -An -tu1 -j4 -N1 \"\$f\" | tr -d ' '); [ \"\$m\" = 3 ] || { echo \"\$f: not a v4-format RPM (lead major \$m): older rpm cannot install it\"; exit 1; }
       l=\$(rpm2cpio \"\$f\" | cpio -t --quiet); for p in etc/ebpf/obi.yaml share/ebpf/systemd-dropin.conf; do grep -q \"/opt/aws/amazon-cloudwatch-agent/\$p\\\$\" <<<\"\$l\" || { echo \"\$f: \$p missing\"; exit 1; }; done
-      echo \"$a: \$v \$(du -h \"\$f\" | cut -f1), has etc/ebpf/obi.yaml + systemd-dropin.conf\""
+      echo \"$a: \$v \$(du -h \"\$f\" | cut -f1), v4 format, has etc/ebpf/obi.yaml + systemd-dropin.conf\""
     # Standalone ("binary") tarball: the same payload + install.sh (ebpf-beta/binary).
     run rpm ebpf-beta/binary/build-tarball.sh "$BS/bin/linux/$a/amazon-cloudwatch-agent.rpm" "$BS/bin/linux/$a/amazon-cloudwatch-agent.tar.gz"
     # Threat model E3: the drop-in template stays root-owned and outside the chowned dirs.

@@ -13,6 +13,9 @@ Source:     amazon-cloudwatch-agent.tar.gz
 %define _source_payload w6.gzdio
 %define _binary_payload w6.gzdio
 %define __jar_repack %{nil}
+# rpm >= 6 writes the v6 package format by default; build the v4 format that older rpm
+# (Amazon Linux 2: 4.11, AL2023: 4.16) installs and unpacks. Older rpm ignores the macro.
+%define _rpmformat 4
 
 %prep
 %setup -c %{name}-%{version}
