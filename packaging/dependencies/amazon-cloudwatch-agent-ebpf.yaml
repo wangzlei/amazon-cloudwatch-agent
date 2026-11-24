@@ -229,10 +229,10 @@ exporters:
         metric_name_selectors:
           - '^http[.](server|client)[.]request[.]duration_(count|sum)$'
     metric_descriptors:
-      - {metric_name: http.server.request.duration_count, unit: Count}
-      - {metric_name: http.client.request.duration_count, unit: Count}
-      - {metric_name: http.server.request.duration_sum, unit: Seconds}
-      - {metric_name: http.client.request.duration_sum, unit: Seconds}
+      - {metric_name: http.server.request.duration_count, unit: Count, overwrite: true}
+      - {metric_name: http.client.request.duration_count, unit: Count, overwrite: true}
+      - {metric_name: http.server.request.duration_sum, unit: Seconds, overwrite: true}
+      - {metric_name: http.client.request.duration_sum, unit: Seconds, overwrite: true}
 
 service:
   extensions: [sigv4auth/cwagent_ebpf_monitoring, sigv4auth/cwagent_ebpf_xray, runtimecontrol/cwagent_ebpf]

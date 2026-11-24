@@ -129,12 +129,12 @@ func (e *Extension) Start(_ context.Context, _ component.Host) error {
 		return nil
 	}
 	if raised {
-		e.logger.Warn("runtimecontrol: poll_interval too short, using the minimum", zap.Duration("poll_interval", e.interval), zap.Duration("minimum", interval))
+		e.logger.Warn("runtimecontrol: poll_interval too short, using the minimum", zap.String("poll_interval", e.cfg.PollInterval.String()), zap.String("minimum", interval.String()))
 	}
 	e.interval = interval
 	e.logger.Info("runtimecontrol: polling SSM parameter for runtime switches",
 		zap.String("extension", e.id), zap.String("parameter", e.cfg.Parameter),
-		zap.String("region", e.cfg.Region), zap.Duration("poll_interval", interval))
+		zap.String("region", e.cfg.Region), zap.String("poll_interval", interval.String()))
 	ctx, cancel := context.WithCancel(context.Background())
 	e.cancel, e.done = cancel, make(chan struct{})
 	go e.run(ctx)
@@ -209,7 +209,7 @@ func (e *Extension) fail(err error) time.Duration {
 	e.logger.Warn("runtimecontrol: could not read the runtime switches; keeping the last values",
 		zap.String("parameter", e.cfg.Parameter), zap.Error(err),
 		zap.String("current", e.describe(*e.flags.Load())), zap.Int("consecutive_failures", e.failures),
-		zap.Duration("retry_in", delay.Round(time.Second)))
+		zap.String("retry_in", delay.Round(time.Second).String()))
 	return delay
 }
 
