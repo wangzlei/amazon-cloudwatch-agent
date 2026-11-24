@@ -20,6 +20,26 @@
 #                   translation (env-config.json) to the region the agent resolved for itself:
 #                   agent.region, credentials profile / AWS_REGION, EC2 / ECS metadata, else the
 #                   AWS_REGION environment variable. eBPF data goes to the agent's region.
+#   CWAGENT_RUNTIME_PARAMETER      SSM parameter (String, in CWAGENT_REGION) with the runtime
+#                   switches, e.g. AmazonCloudWatch-agent-runtime; empty (default) = no polling,
+#                   no AWS call, every switch keeps its default (off).
+#   CWAGENT_RUNTIME_POLL_INTERVAL  how often it is read (default 300s, +-20% jitter, >= 10s).
+#                   On EC2 both come from etc/ebpf/runtime.env (EnvironmentFile of the eBPF
+#                   systemd drop-in; written by the SSM Distributor package's
+#                   SSM_RUNTIME_PARAMETER / SSM_RUNTIME_POLL_INTERVAL), in containers from
+#                   the container's environment.
+#
+# Signals:
+#   RED metrics  always on: pipeline metrics/cwagent_ebpf -> CloudWatch OTLP metrics.
+#   Spans        runtime switch traces_export (default off): traces/cwagent_ebpf -> X-Ray OTLP
+#                endpoint (needs Transaction Search, i.e. trace segment destination
+#                CloudWatchLogs; the role needs xray:PutTraceSegments / PutSpans).
+#   EMF          runtime switch emf_export (default off): metrics/cwagent_ebpf_emf -> EMF logs
+#                in /aws/cwagent/ebpf, metrics in namespace CWAgent/eBPF.
+#   The switches are read by extension runtimecontrol/cwagent_ebpf from the SSM parameter, a
+#   JSON object such as {"version":1,"traces_export":false,"emf_export":false}, and applied by
+#   the gate processors without restarting the agent. A value that cannot be read (missing
+#   parameter, invalid JSON, no permission, throttling) keeps the last values (W! in the log).
 #
 # Never use a double dollar sign in this file: cwagent expands it a second time
 # and fails on the result.
@@ -67,15 +87,16 @@ receivers:
         # OBI matches every local inet port of a process, not only listeners, so keep
         # ranges below the ephemeral range (32768-60999). Not an env var: a
         # single-port value would be typed as an int and rejected by OBI.
-        # exports: "metrics" = RED metrics only: OBI builds no spans, and this config
-        # has no traces pipeline.
+        # exports: "metrics,traces": OBI builds RED metrics and spans. Spans only leave
+        # the agent while the runtime switch traces_export is on (gate/cwagent_ebpf_traces);
+        # "metrics" alone = no spans built at all (switch has no effect, a little less CPU).
         - open_ports: "80,443,3000,5000,8000-8099,8443,8888,9000"
-          exports: "metrics"
+          exports: "metrics,traces"
         # EKS: every Deployment / StatefulSet pod, whatever its ports.
         - k8s_deployment_name: "*"
-          exports: "metrics"
+          exports: "metrics,traces"
         - k8s_statefulset_name: "*"
-          exports: "metrics"
+          exports: "metrics,traces"
       # Added to OBI's built-in excludes (obi / otelcol* executables and the
       # kube-system, kube-node-lease, cert-manager, monitoring, ... namespaces).
       exclude_instrument:
@@ -114,8 +135,26 @@ extensions:
   sigv4auth/cwagent_ebpf_monitoring:
     region: ${env:CWAGENT_REGION:-us-west-2}
     service: monitoring
+  sigv4auth/cwagent_ebpf_xray:
+    region: ${env:CWAGENT_REGION:-us-west-2}
+    service: xray
+  # Runtime switches (see the header). Credentials: the agent's default chain (instance /
+  # task / pod role); the role needs ssm:GetParameter on the parameter
+  # (CloudWatchAgentServerPolicy allows AmazonCloudWatch-*).
+  runtimecontrol/cwagent_ebpf:
+    parameter: ${env:CWAGENT_RUNTIME_PARAMETER:-}
+    poll_interval: ${env:CWAGENT_RUNTIME_POLL_INTERVAL:-300s}
+    region: ${env:CWAGENT_REGION:-us-west-2}
 
 processors:
+  # Each gate passes or drops its pipeline's data per batch from a runtime switch (default
+  # while unknown: off). First in its pipeline, so nothing is done for dropped data.
+  gate/cwagent_ebpf_traces:
+    flag: traces_export
+    default: false
+  gate/cwagent_ebpf_emf:
+    flag: emf_export
+    default: false
   # Lambda Invoke by bare function name: OBI cannot know the account, so complete
   # aws.lambda.function.arn from the host's cloud.account.id (the caller's account
   # unless it uses cross-account credentials) + faas.invoked_region / _name.
@@ -137,6 +176,32 @@ processors:
     timeout: 5s
     send_batch_size: 500
     send_batch_max_size: 500
+  batch/cwagent_ebpf_traces:
+    timeout: 5s
+    send_batch_size: 512
+    send_batch_max_size: 512
+  # EMF: only the HTTP server / client request duration histograms. awsemf does not turn
+  # cumulative explicit histograms into deltas (and cumulativetodelta drops their min / max,
+  # which EMF would report as 0), so each histogram becomes two monotonic cumulative sums,
+  # <name>_count (requests) and <name>_sum (seconds), which awsemf turns into per-period deltas.
+  # Average latency = _sum / _count.
+  filter/cwagent_ebpf_emf:
+    error_mode: ignore
+    metrics:
+      metric:
+        - 'not IsMatch(name, "^http[.](server|client)[.]request[.]duration$")'
+  transform/cwagent_ebpf_emf:
+    error_mode: ignore
+    metric_statements:
+      - context: metric
+        statements:
+          - extract_count_metric(true) where type == METRIC_DATA_TYPE_HISTOGRAM
+          - extract_sum_metric(true) where type == METRIC_DATA_TYPE_HISTOGRAM
+  filter/cwagent_ebpf_emf_histograms:
+    error_mode: ignore
+    metrics:
+      metric:
+        - 'type == METRIC_DATA_TYPE_HISTOGRAM'
 
 exporters:
   # otlp_http compresses with gzip by default.
@@ -144,11 +209,46 @@ exporters:
     metrics_endpoint: https://monitoring.${env:CWAGENT_REGION:-us-west-2}.amazonaws.com/v1/metrics
     auth:
       authenticator: sigv4auth/cwagent_ebpf_monitoring
+  otlp_http/cwagent_ebpf_xray:
+    traces_endpoint: https://xray.${env:CWAGENT_REGION:-us-west-2}.amazonaws.com/v1/traces
+    auth:
+      authenticator: sigv4auth/cwagent_ebpf_xray
+  # Bounded cardinality: CloudWatch metrics only for the dimension sets below (no rollup);
+  # service.name is a resource attribute, hence resource_to_telemetry_conversion (the other
+  # resource attributes are fields of the log event, not dimensions).
+  awsemf/cwagent_ebpf:
+    region: ${env:CWAGENT_REGION:-us-west-2}
+    namespace: CWAgent/eBPF
+    log_group_name: /aws/cwagent/ebpf
+    log_stream_name: "{ServiceName}"
+    dimension_rollup_option: NoDimensionRollup
+    resource_to_telemetry_conversion:
+      enabled: true
+    metric_declarations:
+      - dimensions: [[service.name], [service.name, http.response.status_code]]
+        metric_name_selectors:
+          - '^http[.](server|client)[.]request[.]duration_(count|sum)$'
+    metric_descriptors:
+      - {metric_name: http.server.request.duration_count, unit: Count}
+      - {metric_name: http.client.request.duration_count, unit: Count}
+      - {metric_name: http.server.request.duration_sum, unit: Seconds}
+      - {metric_name: http.client.request.duration_sum, unit: Seconds}
 
 service:
-  extensions: [sigv4auth/cwagent_ebpf_monitoring]
+  extensions: [sigv4auth/cwagent_ebpf_monitoring, sigv4auth/cwagent_ebpf_xray, runtimecontrol/cwagent_ebpf]
   pipelines:
+    # RED metrics: always on.
     metrics/cwagent_ebpf:
       receivers: [obi/cwagent_ebpf]
       processors: [transform/cwagent_ebpf_lambda, cumulativetodelta/cwagent_ebpf, batch/cwagent_ebpf]
       exporters: [otlp_http/cwagent_ebpf_cloudwatch]
+    # Spans: runtime switch traces_export.
+    traces/cwagent_ebpf:
+      receivers: [obi/cwagent_ebpf]
+      processors: [gate/cwagent_ebpf_traces, batch/cwagent_ebpf_traces]
+      exporters: [otlp_http/cwagent_ebpf_xray]
+    # EMF: runtime switch emf_export.
+    metrics/cwagent_ebpf_emf:
+      receivers: [obi/cwagent_ebpf]
+      processors: [gate/cwagent_ebpf_emf, filter/cwagent_ebpf_emf, transform/cwagent_ebpf_emf, filter/cwagent_ebpf_emf_histograms]
+      exporters: [awsemf/cwagent_ebpf]

@@ -83,6 +83,7 @@ import (
 	"github.com/aws/amazon-cloudwatch-agent/extension/agenthealth"
 	"github.com/aws/amazon-cloudwatch-agent/extension/entitystore"
 	"github.com/aws/amazon-cloudwatch-agent/extension/k8smetadata"
+	"github.com/aws/amazon-cloudwatch-agent/extension/runtimecontrol"
 	"github.com/aws/amazon-cloudwatch-agent/extension/nodemetadatacache"
 	"github.com/aws/amazon-cloudwatch-agent/extension/selftelemetry"
 	"github.com/aws/amazon-cloudwatch-agent/extension/server"
@@ -94,6 +95,7 @@ import (
 	"github.com/aws/amazon-cloudwatch-agent/plugins/processors/gpuattributes"
 	"github.com/aws/amazon-cloudwatch-agent/plugins/processors/kueueattributes"
 	"github.com/aws/amazon-cloudwatch-agent/plugins/processors/nodemetadataenricher"
+	"github.com/aws/amazon-cloudwatch-agent/processor/gate"
 	"github.com/aws/amazon-cloudwatch-agent/processor/rollupprocessor"
 	"github.com/aws/amazon-cloudwatch-agent/receiver/awsnvmereceiver"
 	"github.com/aws/amazon-cloudwatch-agent/receiver/systemmetricsreceiver"
@@ -148,6 +150,7 @@ func Factories() (otelcol.Factories, error) {
 		deltatorateprocessor.NewFactory(),
 		ec2tagger.NewFactory(),
 		filterprocessor.NewFactory(),
+		gate.NewFactory(),
 		gpuattributes.NewFactory(),
 		kueueattributes.NewFactory(),
 		groupbytraceprocessor.NewFactory(),
@@ -190,6 +193,7 @@ func Factories() (otelcol.Factories, error) {
 		entitystore.NewFactory(),
 		k8smetadata.NewFactory(),
 		nodemetadatacache.NewFactory(),
+		runtimecontrol.NewFactory(),
 		selftelemetry.NewFactory(),
 		server.NewFactory(),
 		ecsobserver.NewFactory(),

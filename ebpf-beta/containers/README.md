@@ -21,6 +21,30 @@ aws ecs create-service --cluster <c> --service-name cloudwatch-agent-ebpf \
   --task-definition cloudwatch-agent-ebpf --scheduling-strategy DAEMON
 ```
 
+## Runtime switches (spans, EMF)
+
+RED metrics are always exported. Spans (to the X-Ray OTLP endpoint; needs Transaction Search)
+and EMF (log group `/aws/cwagent/ebpf`, namespace `CWAgent/eBPF`) are off until switched on in
+an SSM String parameter, without restarting the agent:
+
+```
+aws ssm put-parameter --type String --overwrite --name AmazonCloudWatch-agent-runtime \
+  --value '{"version":1,"traces_export":true,"emf_export":false}'
+```
+
+Point the agent at it with environment variables of the container (EKS: the commented `env`
+entries in `eks/daemonset.yaml`; ECS: add them to `environment`):
+
+| Variable | Default | |
+|---|---|---|
+| `CWAGENT_RUNTIME_PARAMETER` | unset: no polling, no SSM call, switches off | parameter name (or ARN) in the agent's region; the role needs `ssm:GetParameter` on it (`CloudWatchAgentServerPolicy` allows `AmazonCloudWatch-*`) |
+| `CWAGENT_RUNTIME_POLL_INTERVAL` | `300s` | read interval (+-20% jitter, at least `10s`); a change shows within about one interval |
+
+If the parameter cannot be read (missing, invalid JSON, no permission, throttled) the agent keeps
+the last values and logs a `W!` line, retrying with backoff. The role also needs X-Ray write
+access for spans (`AWSXrayWriteOnlyAccess`) and `logs:PutLogEvents` for EMF
+(`CloudWatchAgentServerPolicy`).
+
 ## Required host mounts
 
 | Mount | Why |

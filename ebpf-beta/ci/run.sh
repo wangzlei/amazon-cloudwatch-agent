@@ -3,11 +3,13 @@
 # (Linux x86_64 with docker, go, sudo). Every stage first generates OBI's BPF bindings
 # (make ebpf-generate: incremental, a no-op when they are current).
 #
-#   ebpf-beta/ci/run.sh [stage ...]    stages: deps unit cross e2e rpm image   (default: gates e2e)
-#                                     gates = deps unit cross
+#   ebpf-beta/ci/run.sh [stage ...]    stages: scripts deps unit cross e2e rpm image   (default: gates e2e)
+#                                     gates = scripts deps unit cross
 #
+#   scripts  bash -n / sh -n of the shipped scripts, shellcheck of the Distributor scripts
+#            (ci/check-scripts.sh; no BPF generation)
 #   deps   go.mod tidy, dependency-version gate vs CloudWatch Agent v1.300074.0, go vet
-#   unit   unit tests: obi receiver, default components, RPM eBPF config, patched OBI packages
+#   unit   unit tests: obi receiver, runtimecontrol extension, gate processor, default components, RPM eBPF config, patched OBI packages
 #   cross  builds for linux/amd64 (kept for e2e), linux/arm64 and windows/amd64
 #   e2e    runs the agent with the shipped capability set (scenario tcp) and without
 #          CAP_NET_ADMIN/CAP_SYS_ADMIN (scenario nonetadmin); asserts RED metrics, spans
@@ -16,7 +18,9 @@
 #   rpm    make package-rpm (amd64 + arm64), checks the version, the v4 package format and the
 #          etc/ebpf payload,
 #          builds the standalone tarball (ebpf-beta/binary) from each RPM, and checks that the
-#          drop-in template is root-owned and outside the chowned dirs (ci/check-package.sh)
+#          drop-in template is root-owned and outside the chowned dirs (ci/check-package.sh),
+#          and the SSM Distributor zips + manifest.json from both RPMs (distributor/build-zips.sh)
+#          in $BUILD_SPACE/bin/distributor/
 #   image  official-layout image (ebpf-beta/image/Dockerfile): builds linux/amd64 into the
 #          local docker and smoke-tests it; IMAGE_PUSH=1 then pushes linux/amd64+arm64
 #
@@ -30,7 +34,7 @@ CI=ebpf-beta/ci; LOGS=$ROOT/build/ebpf-beta-logs; mkdir -p "$LOGS"
 BS=${BUILD_SPACE:-$ROOT/build/ebpf-beta}; AGENT=$BS/bin/linux_amd64/amazon-cloudwatch-agent
 VERSION=${VERSION:-1.300074.0-ebpfbeta.$(git rev-parse --short=7 HEAD)}
 STAGES=("$@"); [[ ${#STAGES[@]} -gt 0 ]] || STAGES=(gates e2e)
-[[ " ${STAGES[*]} " == *" gates "* ]] && STAGES+=(deps unit cross)
+[[ " ${STAGES[*]} " == *" gates "* ]] && STAGES+=(scripts deps unit cross)
 declare -A RESULT
 run() { # run <stage> <cmd...>: log to $LOGS/<stage>.log, record PASS/FAIL
   local s=$1; shift
@@ -40,17 +44,21 @@ run() { # run <stage> <cmd...>: log to $LOGS/<stage>.log, record PASS/FAIL
 want() { [[ " ${STAGES[*]} " == *" $1 "* ]]; }
 gen() { run "$1" make ebpf-generate EBPF_OCI_BIN="${EBPF_OCI_BIN:-docker}"; }
 
+if want scripts; then : > "$LOGS/scripts.log"; RESULT[scripts]=PASS
+  run scripts "$CI/check-scripts.sh"
+fi
+
 if want deps; then : > "$LOGS/deps.log"; RESULT[deps]=PASS
   gen deps
   run deps bash -c "cp go.mod /tmp/ebpf-beta.go.mod && cp go.sum /tmp/ebpf-beta.go.sum && GOFLAGS=-mod=mod go mod tidy && diff /tmp/ebpf-beta.go.mod go.mod && diff -q /tmp/ebpf-beta.go.sum go.sum && echo 'go.mod/go.sum are tidy'"
   run deps "$CI/check-versions.sh" "$CI/base-v1.300074.0.go.mod" go.mod
   run deps bash -c "go list -m all > '$LOGS/modlist.txt' && '$CI/check-versions.sh' --full '$CI/base-v1.300074.0.modlist' '$LOGS/modlist.txt'"
-  run deps go vet ./receiver/obireceiver/ ./service/defaultcomponents/ ./ebpf-beta/configtest/
+  run deps go vet ./receiver/obireceiver/ ./extension/runtimecontrol/ ./processor/gate/ ./service/defaultcomponents/ ./ebpf-beta/configtest/
 fi
 
 if want unit; then : > "$LOGS/unit.log"; RESULT[unit]=PASS
   gen unit
-  run unit go test -count=1 ./receiver/obireceiver/ ./service/defaultcomponents/ ./ebpf-beta/configtest/
+  run unit go test -count=1 ./receiver/obireceiver/ ./extension/runtimecontrol/ ./processor/gate/ ./service/defaultcomponents/ ./ebpf-beta/configtest/
   # The OBI packages the adot-obi patches touch (same list as adot-obi ci/run.sh).
   # tpinjector TestTracer_Constants needs bpf_iter, which OBI only loads on kernels >= 5.11.
   SKIP=""; kv=$(uname -r); kmaj=${kv%%.*}; kmin=${kv#*.}; kmin=${kmin%%.*}
@@ -88,6 +96,8 @@ if want rpm; then : > "$LOGS/rpm.log"; RESULT[rpm]=PASS
     # Threat model E3: the drop-in template stays root-owned and outside the chowned dirs.
     run rpm ebpf-beta/ci/check-package.sh "$BS/bin/linux/$a/amazon-cloudwatch-agent.rpm" "$BS/bin/linux/$a/amazon-cloudwatch-agent.tar.gz"
   done
+  # SSM Distributor package files (no AWS: publishing is ebpf-beta/distributor/publish-scripts.sh).
+  run rpm ebpf-beta/distributor/build-zips.sh "$BS/bin/linux/amd64/amazon-cloudwatch-agent.rpm" "$BS/bin/linux/arm64/amazon-cloudwatch-agent.rpm" "$VERSION" "$BS/bin/distributor"
 fi
 
 if want image; then : > "$LOGS/image.log"; RESULT[image]=PASS
@@ -110,5 +120,5 @@ if want image; then : > "$LOGS/image.log"; RESULT[image]=PASS
 fi
 
 echo; echo "===== summary ====="
-for s in deps unit cross e2e rpm image; do [[ -n ${RESULT[$s]:-} ]] && printf '%-6s %s\n' "$s" "${RESULT[$s]}"; done | tee "$LOGS/summary.txt"
+for s in scripts deps unit cross e2e rpm image; do [[ -n ${RESULT[$s]:-} ]] && printf '%-6s %s\n' "$s" "${RESULT[$s]}"; done | tee "$LOGS/summary.txt"
 ! grep -q FAIL "$LOGS/summary.txt"

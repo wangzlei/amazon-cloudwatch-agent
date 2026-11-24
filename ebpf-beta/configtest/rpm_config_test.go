@@ -52,20 +52,65 @@ func TestRPMDefaultEBPFConfigValidates(t *testing.T) {
 	require.NoError(t, col.DryRun(context.Background()))
 }
 
-// RED metrics only: every discovery instrument entry exports metrics, so OBI builds no
-// spans, and the only pipeline is metrics to CloudWatch (no traces, no debug exporter).
-func TestRPMDefaultEBPFConfigExportsMetricsOnly(t *testing.T) {
+// RED metrics always; spans (X-Ray) and EMF behind runtime switches, default off: every
+// discovery entry builds metrics and spans, the traces and EMF pipelines start with their gate,
+// and the switches are not polled unless CWAGENT_RUNTIME_PARAMETER is set.
+func TestRPMDefaultEBPFConfigPipelines(t *testing.T) {
 	setCreds(t)
+	setOrUnset(t, "CWAGENT_RUNTIME_PARAMETER", "")
+	setOrUnset(t, "CWAGENT_RUNTIME_POLL_INTERVAL", "")
+	conf := resolve(t)
+	for _, e := range conf.Get("receivers::obi/cwagent_ebpf::discovery::instrument").([]any) {
+		assert.Equal(t, "metrics,traces", e.(map[string]any)["exports"], "instrument entry %v", e)
+	}
+	pipelines := conf.Get("service::pipelines").(map[string]any)
+	assert.ElementsMatch(t, []string{"metrics/cwagent_ebpf", "traces/cwagent_ebpf", "metrics/cwagent_ebpf_emf"}, keys(pipelines))
+	assert.ElementsMatch(t, []string{"otlp_http/cwagent_ebpf_cloudwatch", "otlp_http/cwagent_ebpf_xray", "awsemf/cwagent_ebpf"}, keys(conf.Get("exporters").(map[string]any)))
+
+	// RED: no gate
+	assert.Equal(t, []any{"transform/cwagent_ebpf_lambda", "cumulativetodelta/cwagent_ebpf", "batch/cwagent_ebpf"}, conf.Get("service::pipelines::metrics/cwagent_ebpf::processors"))
+	assert.Equal(t, []any{"otlp_http/cwagent_ebpf_cloudwatch"}, conf.Get("service::pipelines::metrics/cwagent_ebpf::exporters"))
+	// gates first
+	assert.Equal(t, "gate/cwagent_ebpf_traces", conf.Get("service::pipelines::traces/cwagent_ebpf::processors").([]any)[0])
+	assert.Equal(t, []any{"otlp_http/cwagent_ebpf_xray"}, conf.Get("service::pipelines::traces/cwagent_ebpf::exporters"))
+	assert.Equal(t, "gate/cwagent_ebpf_emf", conf.Get("service::pipelines::metrics/cwagent_ebpf_emf::processors").([]any)[0])
+	assert.Equal(t, []any{"awsemf/cwagent_ebpf"}, conf.Get("service::pipelines::metrics/cwagent_ebpf_emf::exporters"))
+	assert.Equal(t, "traces_export", conf.Get("processors::gate/cwagent_ebpf_traces::flag"))
+	assert.Equal(t, false, conf.Get("processors::gate/cwagent_ebpf_traces::default"))
+	assert.Equal(t, "emf_export", conf.Get("processors::gate/cwagent_ebpf_emf::flag"))
+	assert.Equal(t, false, conf.Get("processors::gate/cwagent_ebpf_emf::default"))
+
+	assert.Contains(t, conf.Get("service::extensions"), "runtimecontrol/cwagent_ebpf")
+	assert.Nil(t, conf.Get("extensions::runtimecontrol/cwagent_ebpf::parameter"), "no parameter: no polling")
+	assert.Equal(t, "300s", conf.Get("extensions::runtimecontrol/cwagent_ebpf::poll_interval"))
+	assert.Equal(t, "xray", conf.Get("extensions::sigv4auth/cwagent_ebpf_xray::service"))
+	assert.Equal(t, "NoDimensionRollup", conf.Get("exporters::awsemf/cwagent_ebpf::dimension_rollup_option"))
+}
+
+// The parameter and poll interval come from the environment (etc/ebpf/runtime.env on EC2).
+func TestRPMDefaultEBPFConfigRuntimeParameter(t *testing.T) {
+	setCreds(t)
+	t.Setenv("CWAGENT_RUNTIME_PARAMETER", "AmazonCloudWatch-agent-runtime")
+	t.Setenv("CWAGENT_RUNTIME_POLL_INTERVAL", "30s")
+	conf := resolve(t)
+	assert.Equal(t, "AmazonCloudWatch-agent-runtime", conf.Get("extensions::runtimecontrol/cwagent_ebpf::parameter"))
+	assert.Equal(t, "30s", conf.Get("extensions::runtimecontrol/cwagent_ebpf::poll_interval"))
+	col, err := otelcol.NewCollector(otelcol.CollectorSettings{
+		BuildInfo:              component.NewDefaultBuildInfo(),
+		Factories:              defaultcomponents.Factories,
+		ConfigProviderSettings: configprovider.GetSettings([]string{rpmConfig}, zap.NewNop()),
+	})
+	require.NoError(t, err)
+	require.NoError(t, col.DryRun(context.Background()))
+}
+
+func resolve(t *testing.T) *confmap.Conf {
+	t.Helper()
 	r, err := confmap.NewResolver(configprovider.GetSettings([]string{rpmConfig}, zap.NewNop()).ResolverSettings)
 	require.NoError(t, err)
 	conf, err := r.Resolve(context.Background())
 	require.NoError(t, err)
-	for _, e := range conf.Get("receivers::obi/cwagent_ebpf::discovery::instrument").([]any) {
-		assert.Equal(t, "metrics", e.(map[string]any)["exports"], "instrument entry %v", e)
-	}
-	pipelines := conf.Get("service::pipelines").(map[string]any)
-	assert.Equal(t, []string{"metrics/cwagent_ebpf"}, keys(pipelines))
-	assert.Equal(t, []string{"otlp_http/cwagent_ebpf_cloudwatch"}, keys(conf.Get("exporters").(map[string]any)))
+	return conf
 }
 
 func keys(m map[string]any) []string {
@@ -112,6 +157,10 @@ func TestRPMDefaultEBPFConfigRegion(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, "https://monitoring."+tc.want+".amazonaws.com/v1/metrics", conf.Get("exporters::otlp_http/cwagent_ebpf_cloudwatch::metrics_endpoint"))
 			assert.Equal(t, tc.want, conf.Get("extensions::sigv4auth/cwagent_ebpf_monitoring::region"))
+			assert.Equal(t, "https://xray."+tc.want+".amazonaws.com/v1/traces", conf.Get("exporters::otlp_http/cwagent_ebpf_xray::traces_endpoint"))
+			assert.Equal(t, tc.want, conf.Get("extensions::sigv4auth/cwagent_ebpf_xray::region"))
+			assert.Equal(t, tc.want, conf.Get("exporters::awsemf/cwagent_ebpf::region"))
+			assert.Equal(t, tc.want, conf.Get("extensions::runtimecontrol/cwagent_ebpf::region"))
 		})
 	}
 }
@@ -152,4 +201,18 @@ service:
 	assert.Contains(t, pipelines, "metrics/cwagent_ebpf")
 	assert.Contains(t, pipelines, "metrics")
 	assert.Contains(t, pipelines, "traces")
+}
+
+// Set but empty (e.g. an empty container env entry) behaves like unset.
+func TestRPMDefaultEBPFConfigRuntimeParameterEmpty(t *testing.T) {
+	setCreds(t)
+	t.Setenv("CWAGENT_RUNTIME_PARAMETER", "")
+	t.Setenv("CWAGENT_RUNTIME_POLL_INTERVAL", "")
+	col, err := otelcol.NewCollector(otelcol.CollectorSettings{
+		BuildInfo:              component.NewDefaultBuildInfo(),
+		Factories:              defaultcomponents.Factories,
+		ConfigProviderSettings: configprovider.GetSettings([]string{rpmConfig}, zap.NewNop()),
+	})
+	require.NoError(t, err)
+	require.NoError(t, col.DryRun(context.Background()))
 }

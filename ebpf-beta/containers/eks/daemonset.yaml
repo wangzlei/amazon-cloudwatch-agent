@@ -85,6 +85,13 @@ spec:
               value: '{"agent":{"region":"<REGION>"}}'
             - name: KUBE_NODE_NAME
               valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+            # Runtime switches for spans (traces_export) and EMF (emf_export), both off by
+            # default: the SSM parameter to poll (the pod role needs ssm:GetParameter on it)
+            # and how often. Unset = no polling. See ../README.md.
+            # - name: CWAGENT_RUNTIME_PARAMETER
+            #   value: AmazonCloudWatch-agent-runtime
+            # - name: CWAGENT_RUNTIME_POLL_INTERVAL
+            #   value: 300s
           securityContext:
             # Kubernetes has no ambient capabilities: added capabilities only take effect
             # for root. Everything else is dropped.
