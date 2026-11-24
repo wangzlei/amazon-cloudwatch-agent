@@ -4,10 +4,11 @@ name: ebpf-beta
 # patched OBI in third_party/obi). Every job runs ebpf-beta/ci/run.sh, which first
 # generates OBI's BPF bindings in its pinned generator image (they are not committed).
 #
-#   gates  three parallel jobs: deps (tidy + dependency-version gate + vet), unit (tests),
-#          cross (linux/amd64, linux/arm64, windows/amd64 builds)
+#   gates  four parallel jobs: scripts (bash -n + shellcheck), deps (tidy + dependency-version
+#          gate + vet), unit (tests), cross (linux/amd64, linux/arm64, windows/amd64 builds)
 #   e2e    agent with restricted capabilities on the runner's kernel (sudo + capsh)
-#   rpm    make package-rpm (amd64 + arm64) -> workflow artifact
+#   rpm    make package-rpm (amd64 + arm64) -> workflow artifact rpm-<version> (RPMs + tarballs);
+#          SSM Distributor zips + manifest.json from those RPMs -> artifact distributor-<version>
 #   image  official-layout image (ebpf-beta/image/Dockerfile), linux/amd64 + arm64, pushed to
 #          ghcr.io/<owner>/cloudwatch-agent-ebpf-beta:<sha7> (+ latest on branch ebpf-beta,
 #          + <release> on a release run); pull requests only build and smoke-test it
@@ -17,8 +18,8 @@ name: ebpf-beta
 #            pushing a v* tag by hand would also start upstream's record-binary-sizes /
 #            hydrate-goproxy, which need CloudWatch Agent team AWS roles.
 #
-# Publishing to SSM Distributor stays manual (distributor/publish.sh): this workflow has
-# no AWS credentials.
+# Publishing to SSM Distributor stays manual (ebpf-beta/distributor/publish-scripts.sh): this
+# workflow has no AWS credentials.
 
 on:
   push:
@@ -45,7 +46,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        stage: [deps, unit, cross]
+        stage: [scripts, deps, unit, cross]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -53,6 +54,9 @@ jobs:
         with: { persist-credentials: false }
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with: { go-version-file: go.mod, cache: true }
+      - name: shellcheck
+        if: matrix.stage == 'scripts'
+        run: command -v shellcheck || { sudo apt-get update -q && sudo apt-get install -y shellcheck; }
       - name: ${{ matrix.stage }}
         run: ebpf-beta/ci/run.sh "${{ matrix.stage }}"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -100,9 +104,10 @@ jobs:
       - name: rpm
         env: { VERSION: "${{ steps.v.outputs.version }}" }
         run: |
-          command -v rpmbuild || sudo apt-get install -y rpm
+          rpmbuild --version || sudo apt-get install -y rpm
+          command -v zip || sudo apt-get install -y zip
           ebpf-beta/ci/run.sh rpm
-      - name: Collect RPMs and tarballs
+      - name: Collect RPMs, tarballs and Distributor zips
         env: { VERSION: "${{ steps.v.outputs.version }}" }
         run: |
           mkdir -p dist
@@ -111,10 +116,18 @@ jobs:
           cp build/ebpf-beta/bin/linux/amd64/amazon-cloudwatch-agent.tar.gz "dist/amazon-cloudwatch-agent-$VERSION.linux-amd64.tar.gz"
           cp build/ebpf-beta/bin/linux/arm64/amazon-cloudwatch-agent.tar.gz "dist/amazon-cloudwatch-agent-$VERSION.linux-arm64.tar.gz"
           (cd dist && sha256sum *.rpm *.tar.gz | tee SHA256SUMS)
+          mkdir -p dist-distributor
+          cp build/ebpf-beta/bin/distributor/* dist-distributor/
+          (cd dist-distributor && sha256sum *.zip && cat manifest.json)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: rpm-${{ steps.v.outputs.version }}
           path: dist/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: distributor-${{ steps.v.outputs.version }}
+          path: dist-distributor/
           if-no-files-found: error
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
